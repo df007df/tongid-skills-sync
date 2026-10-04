@@ -1,0 +1,48 @@
+{
+  "name": "tongid-skills-sync",
+  "version": "0.1.0",
+  "description": "TongID 技能同步 CLI：本机登录绑定机器授权码，按角色权限安装/更新技能包（GitHub 直连下载），并软连接到各 Agent 平台技能目录。零运行时依赖。",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "keywords": [
+    "tongid",
+    "skills",
+    "skill-selling",
+    "agent-skills",
+    "sync",
+    "machine-token",
+    "oauth",
+    "pkce",
+    "cli"
+  ],
+  "bin": {
+    "tongid-skills-sync": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5",
+    "vitest": "^4.1.11"
+  }
+}
