@@ -24,7 +24,7 @@ npx tongid-skills-sync login --app <applicationId 或 slug>
 tongid-skills-sync login --app <applicationId 或 slug>
 ```
 
-登录成功后，默认应用与平台地址自动写入全局配置 `~/.tongid/skills-sync/skills-sync.config.json`（由本工具生成，不要手工创建、也不属于任何项目仓库），之后 `list` / `install` / `update` / `logout` 均可省略 `--app`；登出默认应用后该默认即被清除，下次登录需重新传入。
+登录成功后，默认应用与平台地址自动写入全局配置 `~/.tongid/skills-sync/config.json`（由本工具生成，不要手工创建、也不属于任何项目仓库），之后 `list` / `install` / `update` / `logout` 均可省略 `--app`；登出默认应用后该默认即被清除，下次登录需重新传入。
 
 - 临时覆盖：命令行 `--app <id|slug>`、`--base-url <url>`（默认 `https://tongid.dev`；本地开发如 `--base-url http://localhost:3000`）
 - 环境变量：`TONGID_SKILLS_APP`、`TONGID_BASE_URL`

@@ -6,13 +6,13 @@ import { defaultStoreDir } from './store.js';
  * 应用绑定配置解析。
  *
  * 默认应用无法凭空得知：第一次 login 必须由用户显式传入（--app 或环境变量），
- * 登录成功后写入全局配置 ~/.tongid/skills-sync/skills-sync.config.json，
+ * 登录成功后写入全局配置 ~/.tongid/skills-sync/config.json，
  * 之后所有命令可省略 --app。
  * 优先级：命令行参数 > 环境变量 > 全局配置文件。
  */
 
 export const DEFAULT_BASE_URL = 'https://tongid.dev';
-export const GLOBAL_CONFIG_FILENAME = 'skills-sync.config.json';
+export const GLOBAL_CONFIG_FILENAME = 'config.json';
 export const ENV_BASE_URL = 'TONGID_BASE_URL';
 export const ENV_APP = 'TONGID_SKILLS_APP';
 
