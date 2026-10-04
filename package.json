@@ -4,7 +4,16 @@
   "description": "TongID 技能同步 CLI：本机登录绑定机器授权码，按角色权限安装/更新技能包（GitHub 直连下载），并软连接到各 Agent 平台技能目录。零运行时依赖。",
   "type": "module",
   "license": "MIT",
-  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/df007df/tongid-skills-sync.git"
+  },
+  "bugs": {
+    "url": "https://github.com/df007df/tongid-skills-sync/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "keywords": [
     "tongid",
     "skills",
@@ -38,7 +47,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepack": "npm run build"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
