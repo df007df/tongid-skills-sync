@@ -1,7 +1,7 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { gzipSync } from 'node:zlib';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -293,6 +293,11 @@ describe('installSkill / planUpdate', () => {
     await expect(
       readFile(path.join(skillsDir, 'app_1', 'pro-tool', 'SKILL.md'), 'utf8'),
     ).resolves.toContain('pro-tool 1.4.0');
+    // 安装目录保持仓库快照原样（无任何工具文件）；元数据在平级隐藏目录
+    await expect(readdir(path.join(skillsDir, 'app_1', 'pro-tool'))).resolves.toEqual(['SKILL.md']);
+    await expect(
+      readFile(path.join(skillsDir, 'app_1', '.skills-sync', 'pro-tool.json'), 'utf8'),
+    ).resolves.toContain('"version": "1.4.0"');
     const { readAppIndex } = await import('./install.js');
     const index = await readAppIndex(skillsDir, 'app_1');
     expect(index.skills['pro-tool']).toMatchObject({ version: '1.4.0' });
@@ -463,12 +468,75 @@ describe('installSkill / planUpdate', () => {
     }
   }, 15_000);
 
+  it('migrates legacy in-dir manifests on update: prunes stale links and relocates metadata', async () => {
+    const { rm: rmPath, symlink, lstat, stat } = await import('node:fs/promises');
+    const home = await mkdtemp(path.join(os.tmpdir(), 'skills-sync-home-'));
+    const platformDir = path.join(home, '.zcode', 'skills');
+    await mkdir(platformDir, { recursive: true });
+
+    try {
+      // ≤0.1.x 布局：清单在安装目录内（kind=collection，含 inner-tool/third-tool）
+      const legacyDir = path.join(skillsDir, 'app_1', 'pro-tool');
+      await mkdir(path.join(legacyDir, 'skills', 'inner-tool'), { recursive: true });
+      await mkdir(path.join(legacyDir, 'skills', 'third-tool'), { recursive: true });
+      await writeFile(
+        path.join(legacyDir, '.skills-sync.json'),
+        JSON.stringify({
+          slug: 'pro-tool',
+          version: '0.9.0',
+          ref: 'v0.9.0',
+          installedAt: '2026-10-04T00:00:00Z',
+          kind: 'collection',
+          skills: ['inner-tool', 'third-tool'],
+        }),
+      );
+
+      // 旧布局时代建好的软链（新版本索引已不识别旧清单，软链是手工存在物）
+      await symlink(path.join(legacyDir, 'skills', 'inner-tool'), path.join(platformDir, 'inner-tool'));
+      await symlink(path.join(legacyDir, 'skills', 'third-tool'), path.join(platformDir, 'third-tool'));
+
+      let tar = tarGzCollectionRepoWith(['inner-tool']);
+      const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith(githubUrl)) {
+          return new Response(new Uint8Array(tar), { status: 200 });
+        }
+        return new Response('{}', { status: 404 });
+      }) as unknown as typeof fetch;
+
+      // update：经 legacy 清单回读得知旧软链单元，third-tool 已不在新版中 → 清理
+      const updated = await installSkill({
+        baseUrl: platformUrl,
+        machineToken: 't-mock-machine-token',
+        app: 'app_1',
+        slug: 'pro-tool',
+        skillsDir,
+        homeDir: home,
+        fetchImpl,
+      });
+      expect(updated.skills).toEqual(['inner-tool']);
+      expect(updated.pruned).toEqual(['zcode/third-tool']);
+
+      // 保留技能的链接指向路径不变，仍然可用
+      const kept = await lstat(path.join(platformDir, 'inner-tool'));
+      expect(kept.isSymbolicLink()).toBe(true);
+      await expect(lstat(path.join(platformDir, 'third-tool'))).rejects.toThrow();
+
+      // 旧清单随目录替换消失；新清单落在元数据目录
+      await expect(stat(path.join(legacyDir, '.skills-sync.json'))).rejects.toThrow();
+      const manifest = await readInstalledManifest('app_1', 'pro-tool', skillsDir);
+      expect(manifest).toMatchObject({ slug: 'pro-tool', version: '1.4.0', kind: 'collection' });
+    } finally {
+      await rmPath(home, { recursive: true, force: true });
+    }
+  }, 15_000);
+
   it('rejects collection inner skill names already installed by another app, before writing anything', async () => {
-    const { mkdir } = await import('node:fs/promises');
     // other-app 已安装单技能 inner-tool（与集合仓内部技能同名）
     await mkdir(path.join(skillsDir, 'other-app', 'inner-tool'), { recursive: true });
+    await mkdir(path.join(skillsDir, 'other-app', '.skills-sync'), { recursive: true });
     await writeFile(
-      path.join(skillsDir, 'other-app', 'inner-tool', '.skills-sync.json'),
+      path.join(skillsDir, 'other-app', '.skills-sync', 'inner-tool.json'),
       JSON.stringify({ slug: 'inner-tool', version: '0.1.0', ref: 'v0.1.0', installedAt: '2026-10-04T00:00:00Z' }),
     );
 
@@ -500,10 +568,10 @@ describe('installSkill / planUpdate', () => {
   }, 15_000);
 
   it('rejects cross-app slug collisions before fetching any grant', async () => {
-    const { mkdir } = await import('node:fs/promises');
     await mkdir(path.join(skillsDir, 'other-app', 'pro-tool'), { recursive: true });
+    await mkdir(path.join(skillsDir, 'other-app', '.skills-sync'), { recursive: true });
     await writeFile(
-      path.join(skillsDir, 'other-app', 'pro-tool', '.skills-sync.json'),
+      path.join(skillsDir, 'other-app', '.skills-sync', 'pro-tool.json'),
       JSON.stringify({ slug: 'pro-tool', version: '0.1.0', ref: 'v0.1.0', installedAt: '2026-10-04T00:00:00Z' }),
     );
 
@@ -550,10 +618,10 @@ describe('installSkill / planUpdate', () => {
     expect(fresh.upToDate).toEqual([]);
 
     // 已安装同版本：无更新（索引经磁盘对账自愈）
-    const { mkdir } = await import('node:fs/promises');
     await mkdir(path.join(skillsDir, 'app_1', 'pro-tool'), { recursive: true });
+    await mkdir(path.join(skillsDir, 'app_1', '.skills-sync'), { recursive: true });
     await writeFile(
-      path.join(skillsDir, 'app_1', 'pro-tool', '.skills-sync.json'),
+      path.join(skillsDir, 'app_1', '.skills-sync', 'pro-tool.json'),
       JSON.stringify({ slug: 'pro-tool', version: '1.4.0', ref: 'v1.4.0', installedAt: '2026-10-04T00:00:00Z' }),
     );
     const upToDatePlan = await withFetch(() => planUpdate({ baseUrl: platformUrl, machineToken: 't-x', app: 'app_1', skillsDir }));

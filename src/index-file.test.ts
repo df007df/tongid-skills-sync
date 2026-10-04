@@ -14,11 +14,14 @@ import {
 
 let skillsDir: string;
 
+async function writeManifestData(app: string, slug: string, data: Record<string, unknown>) {
+  const file = path.join(skillsDir, app, '.skills-sync', `${slug}.json`);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, JSON.stringify(data));
+}
+
 function writeManifest(app: string, slug: string, version: string, ref = `v${version}`) {
-  return writeFile(
-    path.join(skillsDir, app, slug, '.skills-sync.json'),
-    JSON.stringify({ slug, version, ref, installedAt: '2026-10-04T00:00:00Z' }),
-  );
+  return writeManifestData(app, slug, { slug, version, ref, installedAt: '2026-10-04T00:00:00Z' });
 }
 
 beforeEach(async () => {
@@ -55,17 +58,14 @@ describe('readAppIndex', () => {
 
   it('carries collection kind and inner skill names through reconciliation', async () => {
     await mkdir(path.join(skillsDir, 'app-one', 'tool-pack', 'skills', 'alpha'), { recursive: true });
-    await writeFile(
-      path.join(skillsDir, 'app-one', 'tool-pack', '.skills-sync.json'),
-      JSON.stringify({
-        slug: 'tool-pack',
-        version: '1.0.0',
-        ref: 'v1.0.0',
-        installedAt: '2026-10-04T00:00:00Z',
-        kind: 'collection',
-        skills: ['alpha', 'beta'],
-      }),
-    );
+    await writeManifestData('app-one', 'tool-pack', {
+      slug: 'tool-pack',
+      version: '1.0.0',
+      ref: 'v1.0.0',
+      installedAt: '2026-10-04T00:00:00Z',
+      kind: 'collection',
+      skills: ['alpha', 'beta'],
+    });
 
     const rebuilt = await readAppIndex(skillsDir, 'app-one');
     expect(rebuilt.skills['tool-pack']).toMatchObject({
@@ -75,19 +75,28 @@ describe('readAppIndex', () => {
     });
 
     // 内部技能名单变化（磁盘清单为准）：索引对账更新
-    await writeFile(
-      path.join(skillsDir, 'app-one', 'tool-pack', '.skills-sync.json'),
-      JSON.stringify({
-        slug: 'tool-pack',
-        version: '1.1.0',
-        ref: 'v1.1.0',
-        installedAt: '2026-10-04T00:00:00Z',
-        kind: 'collection',
-        skills: ['alpha'],
-      }),
-    );
+    await writeManifestData('app-one', 'tool-pack', {
+      slug: 'tool-pack',
+      version: '1.1.0',
+      ref: 'v1.1.0',
+      installedAt: '2026-10-04T00:00:00Z',
+      kind: 'collection',
+      skills: ['alpha'],
+    });
     const healed = await readAppIndex(skillsDir, 'app-one');
     expect(healed.skills['tool-pack']).toMatchObject({ version: '1.1.0', skills: ['alpha'] });
+  });
+
+  it('ignores legacy in-dir manifests from ≤0.1.x layouts', async () => {
+    await mkdir(path.join(skillsDir, 'app-one', 'pro-tool'), { recursive: true });
+    await writeFile(
+      path.join(skillsDir, 'app-one', 'pro-tool', '.skills-sync.json'),
+      JSON.stringify({ slug: 'pro-tool', version: '1.4.0', ref: 'v1.4.0', installedAt: '2026-10-04T00:00:00Z' }),
+    );
+
+    // 旧位置清单不被识别：视为未安装（下次 update 全量重装即完成迁移）
+    const index = await readAppIndex(skillsDir, 'app-one');
+    expect(index.skills).toEqual({});
   });
 
   it('keeps app metadata and repairs corrupt index files', async () => {

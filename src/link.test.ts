@@ -11,26 +11,31 @@ import {
 let skillsDir: string;
 let platformDir: string;
 
+async function writeManifestData(app: string, slug: string, data: Record<string, unknown>) {
+  const file = path.join(skillsDir, app, '.skills-sync', `${slug}.json`);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, JSON.stringify(data));
+}
+
 function writeManifest(app: string, slug: string, version = '1.0.0') {
-  return writeFile(
-    path.join(skillsDir, app, slug, '.skills-sync.json'),
-    JSON.stringify({ slug, version, ref: `v${version}`, installedAt: '2026-10-04T00:00:00Z' }),
-  );
+  return writeManifestData(app, slug, {
+    slug,
+    version,
+    ref: `v${version}`,
+    installedAt: '2026-10-04T00:00:00Z',
+  });
 }
 
 /** 集合仓安装：清单 kind=collection + skills 名单，内部技能位于 <slug>/skills/<name>/ */
 function writeCollectionManifest(app: string, slug: string, innerSkills: string[], version = '1.0.0') {
-  return writeFile(
-    path.join(skillsDir, app, slug, '.skills-sync.json'),
-    JSON.stringify({
-      slug,
-      version,
-      ref: `v${version}`,
-      installedAt: '2026-10-04T00:00:00Z',
-      kind: 'collection',
-      skills: innerSkills,
-    }),
-  );
+  return writeManifestData(app, slug, {
+    slug,
+    version,
+    ref: `v${version}`,
+    installedAt: '2026-10-04T00:00:00Z',
+    kind: 'collection',
+    skills: innerSkills,
+  });
 }
 
 beforeEach(async () => {
@@ -85,8 +90,9 @@ describe('linkSkillsToPlatform', () => {
 
     const info = await lstat(path.join(platformDir, 'pro-tool'));
     expect(info.isSymbolicLink()).toBe(true);
+    // 安装目录是纯仓库快照：不含任何本工具写入的元数据文件
     const entries = await readdir(path.join(platformDir, 'pro-tool'));
-    expect(entries).toContain('.skills-sync.json');
+    expect(entries).toEqual([]);
   });
 
   it('refreshes our own symlink but never touches foreign entries', async () => {

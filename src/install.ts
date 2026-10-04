@@ -1,5 +1,6 @@
 import { createWriteStream } from 'node:fs';
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
@@ -24,9 +25,11 @@ import { extractTarGzToDir } from './tar.js';
  *   （skills/<name>/SKILL.md），整仓安装到 <app>/<slug>/，内部各技能单独做软连接。
  *
  * 技能统一维护在全局唯一目录 ~/.tongid/skills-sync/skills/<app>/<slug>/
- * （与凭据同根，可用 --dir 覆盖根目录）；每包带 .skills-sync.json 版本清单
- * （含仓库形态与集合仓内部技能名），多平台软连接以此为源。每个应用名下另维护
- * index.json 应用索引（应用信息 + 各技能版本/安装时间/形态），读取时与磁盘对账自愈。
+ * （与凭据同根，可用 --dir 覆盖根目录）。<slug>/ 保持仓库快照原样，不写入任何
+ * 工具文件；安装元数据（版本清单，含仓库形态与集合仓内部技能名）放在平级隐藏目录
+ * <app>/.skills-sync/<slug>.json，多平台软连接以安装目录为源。每个应用名下另维护
+ * index.json 应用索引（应用信息 + 各技能版本/安装时间/形态），读取时与磁盘对账自愈
+ * （磁盘事实 = 清单与同名安装目录配对存在，孤儿清单或缺清单的目录都不算已安装）。
  *
  * 跨应用同名约束：平台技能目录的软连接名只有技能名（集合仓为内部技能名），
  * 因此同一名字只允许出现在一个安装名下——单技能仓 install 前置校验拒绝；
@@ -42,15 +45,23 @@ import { extractTarGzToDir } from './tar.js';
  * 指向别处的链接）一律不动。新增内部技能在下一次 link 时自动出现。
  */
 
-export const MANIFEST_FILENAME = '.skills-sync.json';
+/** 安装元数据目录：应用目录内、与各安装目录平级的隐藏目录。 */
+export const MANIFEST_DIRNAME = '.skills-sync';
+/** ≤0.1.x 布局：清单写在安装目录内；仅更新时回读（失效软链清理），不再产生。 */
+export const LEGACY_MANIFEST_FILENAME = '.skills-sync.json';
 export const APP_INDEX_FILENAME = 'index.json';
 
 /** 技能统一维护目录（全局唯一）：~/.tongid/skills-sync/skills */
 export const DEFAULT_SKILLS_DIR = defaultSkillsDir();
 
-/** 技能安装目录：<root>/<app>/<slug>。 */
+/** 技能安装目录：<root>/<app>/<slug>（纯仓库快照）。 */
 export function skillInstallDir(skillsRoot: string, app: string, slug: string): string {
   return path.join(path.resolve(skillsRoot), sanitizeAppKey(app), slug);
+}
+
+/** 安装元数据文件：<root>/<app>/.skills-sync/<slug>.json（仓库快照之外）。 */
+export function manifestFile(skillsRoot: string, app: string, slug: string): string {
+  return path.join(path.resolve(skillsRoot), sanitizeAppKey(app), MANIFEST_DIRNAME, `${slug}.json`);
 }
 
 /** 仓库形态：single=根 SKILL.md 单技能；collection=根 skills/ 目录多技能集合。 */
@@ -94,8 +105,10 @@ function appIndexFile(skillsRoot: string, app: string): string {
 
 /**
  * 读取应用索引，并与磁盘对账自愈：
- * - 索引缺失/损坏：遍历 <app>/<slug>/.skills-sync.json 重建；
- * - 索引与磁盘不一致（手工增删）：以磁盘为准修正并回写。
+ * - 索引缺失/损坏：遍历 <app>/.skills-sync/<slug>.json 清单重建；
+ * - 索引与磁盘不一致（手工增删）：以磁盘为准修正并回写；
+ * - 磁盘事实 = 清单与同名安装目录配对存在，二者缺一不算已安装
+ *   （孤儿清单、缺清单的目录均忽略）。
  */
 export async function readAppIndex(skillsRoot: string, app: string): Promise<AppIndex> {
   const root = path.resolve(skillsRoot);
@@ -116,31 +129,38 @@ export async function readAppIndex(skillsRoot: string, app: string): Promise<App
     // 索引不存在或损坏：走重建
   }
 
-  // 磁盘侧真实安装（带清单的技能目录）
+  // 磁盘侧真实安装：元数据目录中的每个清单，配对的安装目录存在才算数
   const onDisk = new Map<string, AppIndexSkill>();
-  let entries;
+  const metaDir = path.join(appDir, MANIFEST_DIRNAME);
+  let manifestFiles: Dirent[] | null = null;
   try {
-    entries = await readdir(appDir, { withFileTypes: true });
+    manifestFiles = await readdir(metaDir, { withFileTypes: true });
   } catch {
-    return index ?? emptyAppIndex(app);
+    // 元数据目录不存在（从未安装，或 ≤0.1.x 旧布局）：按无安装参与对账
   }
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+  if (manifestFiles === null && !index) {
+    // 无索引且无可扫描清单：直接返回，不产生磁盘写入
+    return emptyAppIndex(app);
+  }
+  for (const entry of manifestFiles ?? []) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    const slug = entry.name.slice(0, -'.json'.length);
     try {
       const manifest = JSON.parse(
-        await readFile(path.join(appDir, entry.name, MANIFEST_FILENAME), 'utf8'),
+        await readFile(path.join(metaDir, entry.name), 'utf8'),
       ) as InstalledManifest;
-      if (manifest?.slug === entry.name && manifest.version) {
-        onDisk.set(entry.name, {
-          version: manifest.version,
-          ref: manifest.ref,
-          installedAt: manifest.installedAt,
-          ...(manifest.kind ? { kind: manifest.kind } : {}),
-          ...(manifest.skills ? { skills: manifest.skills } : {}),
-        });
-      }
+      if (manifest?.slug !== slug || !manifest.version) continue;
+      const installInfo = await stat(path.join(appDir, slug)).catch(() => null);
+      if (!installInfo?.isDirectory()) continue;
+      onDisk.set(slug, {
+        version: manifest.version,
+        ref: manifest.ref,
+        installedAt: manifest.installedAt,
+        ...(manifest.kind ? { kind: manifest.kind } : {}),
+        ...(manifest.skills ? { skills: manifest.skills } : {}),
+      });
     } catch {
-      // 无清单/损坏的目录不纳入索引
+      // 损坏的清单不纳入索引
     }
   }
 
@@ -453,20 +473,26 @@ export async function installSkill(options: {
     // 软连接名占用校验（集合仓内部技能名解包后才可知，落盘前拦截）
     await assertLinkNamesAvailable(skillsRoot, app, grant.slug, linkNames);
 
-    // 旧安装的软链单元（update 场景）：目录被替换前读取，安装成功后据此清理失效软链
+    // 旧安装的软链单元（update 场景）：目录被替换前读取，安装成功后据此清理失效软链。
+    // 新位置无清单时回读安装目录内的 ≤0.1.x 旧清单（该目录随后被整体替换，旧文件随之消失）。
     let previousUnits: Array<{ name: string; dir: string }> = [];
+    let oldManifest: InstalledManifest | null = null;
     try {
-      const oldManifest = JSON.parse(
-        await readFile(path.join(targetDir, MANIFEST_FILENAME), 'utf8'),
-      ) as InstalledManifest;
-      if (oldManifest?.slug) {
-        previousUnits = linkNamesOfEntry(oldManifest, oldManifest.slug).map((name) => ({
-          name,
-          dir: oldManifest.kind === 'collection' ? path.join(targetDir, 'skills', name) : targetDir,
-        }));
-      }
+      oldManifest = JSON.parse(await readFile(manifestFile(skillsRoot, app, grant.slug), 'utf8')) as InstalledManifest;
     } catch {
-      // 无旧安装（全新 install）：无需清理
+      try {
+        oldManifest = JSON.parse(
+          await readFile(path.join(targetDir, LEGACY_MANIFEST_FILENAME), 'utf8'),
+        ) as InstalledManifest;
+      } catch {
+        oldManifest = null;
+      }
+    }
+    if (oldManifest?.slug) {
+      previousUnits = linkNamesOfEntry(oldManifest, oldManifest.slug).map((name) => ({
+        name,
+        dir: oldManifest.kind === 'collection' ? path.join(targetDir, 'skills', name) : targetDir,
+      }));
     }
 
     await mkdir(path.dirname(targetDir), { recursive: true });
@@ -481,7 +507,9 @@ export async function installSkill(options: {
       kind: layout.kind,
       ...(layout.kind === 'collection' ? { skills: layout.skills } : {}),
     };
-    await writeFile(path.join(targetDir, MANIFEST_FILENAME), `${JSON.stringify(manifest, null, 2)}\n`);
+    const metaFile = manifestFile(skillsRoot, app, grant.slug);
+    await mkdir(path.dirname(metaFile), { recursive: true });
+    await writeFile(metaFile, `${JSON.stringify(manifest, null, 2)}\n`);
 
     // 应用索引：安装成功后登记版本与基础信息
     const index = await readAppIndex(skillsRoot, app);
@@ -546,10 +574,7 @@ export async function readInstalledManifest(
   skillsDir: string = DEFAULT_SKILLS_DIR,
 ): Promise<InstalledManifest | null> {
   try {
-    const raw = await readFile(
-      path.join(skillInstallDir(skillsDir, app, slug), MANIFEST_FILENAME),
-      'utf8',
-    );
+    const raw = await readFile(manifestFile(skillsDir, app, slug), 'utf8');
     const parsed = JSON.parse(raw) as InstalledManifest;
     return parsed?.slug === slug ? parsed : null;
   } catch {
