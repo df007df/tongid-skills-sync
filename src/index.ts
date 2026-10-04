@@ -13,11 +13,13 @@
 
 export {
   DEFAULT_BASE_URL,
-  PROJECT_CONFIG_FILENAME,
+  GLOBAL_CONFIG_FILENAME,
   ENV_APP,
   ENV_BASE_URL,
   resolveSkillsPayConfig,
-  readProjectConfig,
+  readGlobalConfig,
+  writeGlobalConfig,
+  clearDefaultApp,
   normalizeBaseUrl,
   SkillsPayConfigError,
   type SkillsPayConfig,
