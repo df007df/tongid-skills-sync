@@ -43,6 +43,8 @@ tongid-skills-sync uninstall <slug>     # 删除已安装技能（安装目录�
 tongid-skills-sync link [--platform x]  # 软连接已安装技能到平台技能目录（默认全部已检测平台）
 tongid-skills-sync unlink [--platform x] # 移除平台技能目录中由本工具建立的软连接
 tongid-skills-sync logout               # 解绑本机机器并删除本地凭据
+tongid-skills-sync version              # 显示 CLI 自身版本（--version / -v 等效）
+tongid-skills-sync self-update          # 查询 npm 最新版本并全局更新 CLI 自身
 ```
 
 ## 技能统一目录、应用索引与多平台软连接

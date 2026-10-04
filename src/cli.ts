@@ -7,7 +7,11 @@ import { deleteCredential, loadCredential, saveCredential } from './store.js';
 import { detectSkillPlatforms, findSkillPlatform, platformSkillsDir } from './platforms.js';
 import { linkSkillsToPlatform, unlinkSkillsFromPlatform } from './link.js';
 import { createInstallProgressReporter } from './progress.js';
+import { cliVersion, compareVersions } from './version.js';
+import { spawnSync } from 'node:child_process';
 import os from 'node:os';
+
+const PACKAGE_NAME = 'tongid-skills-sync';
 
 /** 手写参数解析（零依赖）：tongid-skills-sync <command> [args] [--app x] [--base-url x] [--dir x] [--label x] [--platform x] */
 
@@ -87,6 +91,25 @@ function printPrunedLinks(result: InstallResult): void {
   }
 }
 
+function npmCommand(): string {
+  return process.platform === 'win32' ? 'npm.cmd' : 'npm';
+}
+
+/** 查询 npm 上最新发布版本（走用户本机 npm 配置的 registry）；失败返回 null。 */
+function npmLatestVersion(): string | null {
+  const result = spawnSync(npmCommand(), ['view', PACKAGE_NAME, 'version'], {
+    encoding: 'utf8',
+    timeout: 30_000,
+  });
+  if (result.error || result.status !== 0) return null;
+  const line = (result.stdout ?? '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .pop();
+  return line ?? null;
+}
+
 /**
  * 安装/更新成功后自动软链到本机已存在的平台技能目录（不创建平台目录）。
  * 只输出有实际动作或异常的条目；无一连接且无跳过异常时保持安静。
@@ -110,6 +133,11 @@ async function autoLinkToPlatforms(skillsDir: string): Promise<void> {
 
 async function main(): Promise<void> {
   const { command, positional, flags } = parseArgs(process.argv.slice(2));
+
+  if (command === 'version' || command === '--version' || command === '-v' || flags.version === true) {
+    process.stdout.write(`${PACKAGE_NAME} ${cliVersion()}\n`);
+    return;
+  }
 
   switch (command) {
     case 'login': {
@@ -267,6 +295,28 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 'self-update': {
+      const current = cliVersion();
+      process.stdout.write(`当前版本 ${PACKAGE_NAME} ${current}\n查询 npm 最新版本…\n`);
+      const latest = npmLatestVersion();
+      if (!latest) {
+        fail(`查询 npm 最新版本失败，请检查网络后重试，或手动执行：npm install -g ${PACKAGE_NAME}@latest`);
+      }
+      if (compareVersions(current, latest) >= 0) {
+        process.stdout.write(`已是最新版本（${current}）\n`);
+        break;
+      }
+      process.stdout.write(`发现新版本：${current} → ${latest}，正在全局更新…\n`);
+      const result = spawnSync(npmCommand(), ['install', '-g', `${PACKAGE_NAME}@${latest}`], {
+        stdio: 'inherit',
+      });
+      if (result.error || (result.status !== 0 && result.status !== null)) {
+        fail(`自动更新失败，请手动执行：npm install -g ${PACKAGE_NAME}@${latest}`);
+      }
+      process.stdout.write(`已更新到 ${latest}。重新运行 ${PACKAGE_NAME} 即使用新版。\n`);
+      break;
+    }
+
     case 'logout': {
       const config = await resolveSkillsPayConfig({
         cliApp: flagValue(flags, 'app'),
@@ -362,7 +412,7 @@ async function main(): Promise<void> {
     default:
       process.stdout.write(
         [
-          'TongID 技能同步 CLI（tongid-skills-sync）',
+          `TongID 技能同步 CLI（tongid-skills-sync）${cliVersion()}`,
           '',
           '用法：tongid-skills-sync <command> [options]',
           '',
@@ -375,6 +425,8 @@ async function main(): Promise<void> {
           '  link [--platform x]  软连接已安装技能到平台技能目录（集合仓按内部技能逐个连接；默认全部已检测平台）',
           '  unlink [--platform x] 移除平台技能目录中由本工具建立的软连接',
           '  logout               解绑本机机器授权码并删除本地凭据',
+          '  version              显示 CLI 自身版本（--version / -v 等效）',
+          '  self-update          检查 npm 最新版本并全局更新 CLI 自身',
           '',
           '选项：',
           '  --app <id|slug>      目标应用（第一次 login 必传；之后默认取上次登录的应用，或用 TONGID_SKILLS_APP）',
