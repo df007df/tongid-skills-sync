@@ -54,7 +54,7 @@ function tarGz(version: string): Buffer {
   return gzipSync(Buffer.concat([header, content, padding, Buffer.alloc(1024)]));
 }
 
-/** 集合仓形态：根目录没有 SKILL.md（技能在子目录里） */
+/** 集合仓形态：根目录有 skills/ 目录，技能在子目录里 */
 function tarGzCollectionRepo(): Buffer {
   const chunks: Buffer[] = [];
   const entry = (name: string, content: Buffer) => {
@@ -70,6 +70,27 @@ function tarGzCollectionRepo(): Buffer {
   };
   entry('repo-x/README.md', Buffer.from('# collection\n'));
   entry('repo-x/skills/inner-tool/SKILL.md', Buffer.from('# inner\n'));
+  entry('repo-x/skills/second-tool/SKILL.md', Buffer.from('# second\n'));
+  entry('repo-x/skills/not-a-skill/notes.txt', Buffer.from('skip me\n'));
+  chunks.push(Buffer.alloc(1024));
+  return gzipSync(Buffer.concat(chunks));
+}
+
+/** 完全不合规形态：根目录既没有 SKILL.md 也没有 skills/ 目录 */
+function tarGzBadRepo(): Buffer {
+  const chunks: Buffer[] = [];
+  const entry = (name: string, content: Buffer) => {
+    const header = Buffer.alloc(512);
+    header.write(name, 0, 100, 'utf8');
+    header.write(content.length.toString(8).padStart(11, '0') + '\0', 124, 12, 'ascii');
+    header.write('0', 156, 1, 'ascii');
+    header.write('ustar\0', 257, 6, 'ascii');
+    let checksum = 0;
+    for (const byte of header) checksum += byte;
+    header.write(checksum.toString(8).padStart(6, '0') + '\0 ', 148, 8, 'ascii');
+    chunks.push(header, content, Buffer.alloc((512 - (content.length % 512)) % 512));
+  };
+  entry('repo-x/README.md', Buffer.from('# nothing here\n'));
   chunks.push(Buffer.alloc(1024));
   return gzipSync(Buffer.concat(chunks));
 }
@@ -253,7 +274,13 @@ describe('installSkill / planUpdate', () => {
       fetchImpl,
     });
 
-    expect(result).toEqual({ slug: 'pro-tool', version: '1.4.0', files: expect.any(Number) });
+    expect(result).toEqual({
+      slug: 'pro-tool',
+      version: '1.4.0',
+      files: expect.any(Number),
+      kind: 'single',
+      skills: [],
+    });
     // 两层布局：<root>/<app>/<slug>，且应用索引登记了版本
     const manifest = await readInstalledManifest('app_1', 'pro-tool', skillsDir);
     expect(manifest).toMatchObject({ slug: 'pro-tool', version: '1.4.0', ref: 'v1.4.0' });
@@ -268,11 +295,57 @@ describe('installSkill / planUpdate', () => {
     expect(state.sawGithubToken).toBe('Bearer github_pat_secret');
   }, 15_000);
 
-  it('rejects repos without a root SKILL.md (collection repos are not single-skill format)', async () => {
-    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+  it('installs collection repos (root skills/ dir) with per-skill layout and manifest kind', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.startsWith(githubUrl)) {
         return new Response(new Uint8Array(tarGzCollectionRepo()), { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    }) as unknown as typeof fetch;
+
+    const result = await installSkill({
+      baseUrl: platformUrl,
+      machineToken: 't-mock-machine-token',
+      app: 'app_1',
+      slug: 'pro-tool',
+      skillsDir,
+      fetchImpl,
+    });
+
+    // 集合仓：kind=collection，内部技能名即软连接名（无 SKILL.md 的子目录不算技能）
+    expect(result).toEqual({
+      slug: 'pro-tool',
+      version: '1.4.0',
+      files: expect.any(Number),
+      kind: 'collection',
+      skills: ['inner-tool', 'second-tool'],
+    });
+
+    const manifest = await readInstalledManifest('app_1', 'pro-tool', skillsDir);
+    expect(manifest).toMatchObject({
+      slug: 'pro-tool',
+      version: '1.4.0',
+      ref: 'v1.4.0',
+      kind: 'collection',
+      skills: ['inner-tool', 'second-tool'],
+    });
+    await expect(
+      readFile(path.join(skillsDir, 'app_1', 'pro-tool', 'skills', 'inner-tool', 'SKILL.md'), 'utf8'),
+    ).resolves.toContain('# inner');
+    await expect(
+      readFile(path.join(skillsDir, 'app_1', 'pro-tool', 'skills', 'second-tool', 'SKILL.md'), 'utf8'),
+    ).resolves.toContain('# second');
+    const { readAppIndex } = await import('./install.js');
+    const index = await readAppIndex(skillsDir, 'app_1');
+    expect(index.skills['pro-tool']).toMatchObject({ version: '1.4.0', kind: 'collection', skills: ['inner-tool', 'second-tool'] });
+  }, 15_000);
+
+  it('rejects repos with neither a root SKILL.md nor a usable skills/ directory', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith(githubUrl)) {
+        return new Response(new Uint8Array(tarGzBadRepo()), { status: 200 });
       }
       return new Response('{}', { status: 404 });
     }) as unknown as typeof fetch;
@@ -286,9 +359,45 @@ describe('installSkill / planUpdate', () => {
         skillsDir,
         fetchImpl,
       }),
-    ).rejects.toThrow(/根目录缺少 SKILL\.md/);
+    ).rejects.toThrow(/既没有 SKILL\.md，也没有包含技能的 skills\/ 目录/);
 
     // 报错后不落任何安装目录，索引也不登记
+    const { stat } = await import('node:fs/promises');
+    await expect(stat(path.join(skillsDir, 'app_1', 'pro-tool'))).rejects.toThrow();
+    const { readAppIndex } = await import('./install.js');
+    const index = await readAppIndex(skillsDir, 'app_1');
+    expect(index.skills['pro-tool']).toBeUndefined();
+  }, 15_000);
+
+  it('rejects collection inner skill names already installed by another app, before writing anything', async () => {
+    const { mkdir } = await import('node:fs/promises');
+    // other-app 已安装单技能 inner-tool（与集合仓内部技能同名）
+    await mkdir(path.join(skillsDir, 'other-app', 'inner-tool'), { recursive: true });
+    await writeFile(
+      path.join(skillsDir, 'other-app', 'inner-tool', '.skills-sync.json'),
+      JSON.stringify({ slug: 'inner-tool', version: '0.1.0', ref: 'v0.1.0', installedAt: '2026-10-04T00:00:00Z' }),
+    );
+
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith(githubUrl)) {
+        return new Response(new Uint8Array(tarGzCollectionRepo()), { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    }) as unknown as typeof fetch;
+
+    // 内部技能名解包后才可知：占用校验发生在落盘前
+    await expect(
+      installSkill({
+        baseUrl: platformUrl,
+        machineToken: 't-mock-machine-token',
+        app: 'app_1',
+        slug: 'pro-tool',
+        skillsDir,
+        fetchImpl,
+      }),
+    ).rejects.toThrow(/inner-tool[\s\S]*other-app[\s\S]*无法软连接/);
+
     const { stat } = await import('node:fs/promises');
     await expect(stat(path.join(skillsDir, 'app_1', 'pro-tool'))).rejects.toThrow();
     const { readAppIndex } = await import('./install.js');

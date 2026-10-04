@@ -16,18 +16,27 @@ import { extractTarGzToDir } from './tar.js';
 /**
  * 技能包安装与更新。
  *
- * 技能统一维护在全局唯一目录 ~/.tongid/skills-sync/skills/<app>/<slug>/
- * （与凭据同根，可用 --dir 覆盖根目录）；每包带 .skills-sync.json 版本清单，
- * 多平台软连接以此为源。每个应用名下另维护 index.json 应用索引
- * （应用信息 + 各技能版本/安装时间），读取时与磁盘对账自愈。
+ * 仓库支持两种格式，安装时按解包结果探测：
+ * - 单技能仓库：根目录直接有 SKILL.md；
+ * - 多技能集合仓库：根目录有 skills/ 目录，其中每个含 SKILL.md 的子目录是一个技能
+ *   （skills/<name>/SKILL.md），整仓安装到 <app>/<slug>/，内部各技能单独做软连接。
  *
- * 跨应用同名约束：平台技能目录的软连接名只有 <slug>，因此同一 slug 只允许
- * 出现在一个应用名下——install 前置校验，其他应用已占用时直接报错拒绝，
- * 不产生无法软连接的安装。
+ * 技能统一维护在全局唯一目录 ~/.tongid/skills-sync/skills/<app>/<slug>/
+ * （与凭据同根，可用 --dir 覆盖根目录）；每包带 .skills-sync.json 版本清单
+ * （含仓库形态与集合仓内部技能名），多平台软连接以此为源。每个应用名下另维护
+ * index.json 应用索引（应用信息 + 各技能版本/安装时间/形态），读取时与磁盘对账自愈。
+ *
+ * 跨应用同名约束：平台技能目录的软连接名只有技能名（集合仓为内部技能名），
+ * 因此同一名字只允许出现在一个安装名下——单技能仓 install 前置校验拒绝；
+ * 集合仓内部技能名下载解包后才能得知，落盘前校验拒绝。两种情况都不产生
+ * 无法软连接的安装。
  *
  * 流程：校验（占用/registry/机器码）→ 领取下载凭据（真实 GitHub 地址 + 私有库令牌）
  * → 直连 GitHub 流式下载到临时文件（不经平台转发）→ 解压到统一目录
- * → 写入版本清单与应用索引 → 令牌即弃（只存在于函数栈内，不落盘）。
+ * → 探测格式并校验软连接名占用 → 写入版本清单与应用索引 → 令牌即弃（只存在于函数栈内，不落盘）。
+ *
+ * 已知取舍：集合仓 update 后若删除了某个内部技能，其旧软连接会悬空（下次 link 报
+ * 目录缺失），需手工移除；新增内部技能在下一次 link 时自动出现。
  */
 
 export const MANIFEST_FILENAME = '.skills-sync.json';
@@ -41,10 +50,26 @@ export function skillInstallDir(skillsRoot: string, app: string, slug: string): 
   return path.join(path.resolve(skillsRoot), sanitizeAppKey(app), slug);
 }
 
+/** 仓库形态：single=根 SKILL.md 单技能；collection=根 skills/ 目录多技能集合。 */
+export type SkillRepoKind = 'single' | 'collection';
+
+/** 某个已安装条目占用的平台软连接名：集合仓为内部技能名，单技能仓为 slug 本身。 */
+export function linkNamesOfEntry(
+  entry: { kind?: string; skills?: string[] },
+  slug: string,
+): string[] {
+  return entry.kind === 'collection' && Array.isArray(entry.skills) && entry.skills.length > 0
+    ? entry.skills
+    : [slug];
+}
+
 export type AppIndexSkill = {
   version: string;
   ref: string;
   installedAt: string;
+  kind?: SkillRepoKind;
+  /** collection：仓库内技能名（skills/ 下子目录名，即平台软连接名） */
+  skills?: string[];
 };
 
 /** 应用索引：skills/<app>/index.json，记录应用安装状态与各技能版本。 */
@@ -107,6 +132,8 @@ export async function readAppIndex(skillsRoot: string, app: string): Promise<App
           version: manifest.version,
           ref: manifest.ref,
           installedAt: manifest.installedAt,
+          ...(manifest.kind ? { kind: manifest.kind } : {}),
+          ...(manifest.skills ? { skills: manifest.skills } : {}),
         });
       }
     } catch {
@@ -128,7 +155,13 @@ export async function readAppIndex(skillsRoot: string, app: string): Promise<App
     [...onDisk.keys()].some((slug) => {
       const indexed = index!.skills[slug];
       const disk = onDisk.get(slug)!;
-      return !indexed || indexed.version !== disk.version || indexed.ref !== disk.ref;
+      return (
+        !indexed ||
+        indexed.version !== disk.version ||
+        indexed.ref !== disk.ref ||
+        (indexed.kind ?? 'single') !== (disk.kind ?? 'single') ||
+        JSON.stringify(indexed.skills ?? []) !== JSON.stringify(disk.skills ?? [])
+      );
     });
 
   if (drifted) {
@@ -178,12 +211,18 @@ export type InstalledManifest = {
   version: string;
   ref: string;
   installedAt: string;
+  kind?: SkillRepoKind;
+  /** collection：仓库内技能名（skills/ 下子目录名） */
+  skills?: string[];
 };
 
 export type InstallResult = {
   slug: string;
   version: string;
   files: number;
+  kind: SkillRepoKind;
+  /** collection：包含的技能名；single 为空数组 */
+  skills: string[];
 };
 
 export class SkillsPayInstallError extends Error {
@@ -196,6 +235,94 @@ export class SkillsPayInstallError extends Error {
 
 function randomTmpDir(): string {
   return path.join(os.tmpdir(), `skills-sync-${Math.random().toString(36).slice(2)}-${Date.now()}`);
+}
+
+type RepoLayout = { kind: 'single' } | { kind: 'collection'; skills: string[] };
+
+/**
+ * 探测解包后的仓库形态：根 skills/ 目录存在则视为多技能集合仓
+ * （其中每个含 SKILL.md 的子目录是一个技能），否则按单技能仓要求根 SKILL.md。
+ */
+async function probeRepoLayout(stagingDir: string, ref: string): Promise<RepoLayout> {
+  const { readdir, stat: statFile } = await import('node:fs/promises');
+
+  const formatError = new SkillsPayInstallError(
+    `技能包格式错误：仓库根目录既没有 SKILL.md，也没有包含技能的 skills/ 目录` +
+      `（支持两种格式：单技能仓库 SKILL.md 位于根目录；多技能集合仓库 skills/<name>/SKILL.md）。` +
+      `请联系卖家调整仓库结构，ref=${ref}`,
+  );
+
+  let skillsEntries;
+  try {
+    const info = await statFile(path.join(stagingDir, 'skills'));
+    if (!info.isDirectory()) throw new Error('not a directory');
+    skillsEntries = await readdir(path.join(stagingDir, 'skills'), { withFileTypes: true });
+  } catch {
+    skillsEntries = null;
+  }
+
+  if (skillsEntries) {
+    const inner: string[] = [];
+    for (const entry of skillsEntries) {
+      if (!entry.isDirectory()) continue;
+      try {
+        const skillFile = await statFile(path.join(stagingDir, 'skills', entry.name, 'SKILL.md'));
+        if (skillFile.isFile()) inner.push(entry.name);
+      } catch {
+        // 无 SKILL.md 的子目录不算技能
+      }
+    }
+    if (inner.length === 0) throw formatError;
+    return { kind: 'collection', skills: inner.sort() };
+  }
+
+  try {
+    const info = await statFile(path.join(stagingDir, 'SKILL.md'));
+    if (!info.isFile()) throw new Error('not a file');
+  } catch {
+    throw formatError;
+  }
+  return { kind: 'single' };
+}
+
+/**
+ * 校验本次安装将占用的软连接名（集合仓为内部技能名）未被其他安装占用：
+ * 其他应用、以及本应用名下其他技能（跨仓库内部名冲突同样无法软连接）。
+ * 自身条目不算（覆盖更新时旧的内部技能名被整体替换）。
+ */
+async function assertLinkNamesAvailable(
+  skillsRoot: string,
+  app: string,
+  slug: string,
+  linkNames: string[],
+): Promise<void> {
+  const wanted = new Set(linkNames);
+  const ownKey = sanitizeAppKey(app);
+  let appDirs;
+  try {
+    appDirs = await readdir(skillsRoot, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of appDirs) {
+    if (!entry.isDirectory()) continue;
+    const isOwn = entry.name === ownKey;
+    const index = await readAppIndex(skillsRoot, entry.name);
+    for (const [otherSlug, otherEntry] of Object.entries(index.skills)) {
+      if (isOwn && otherSlug === slug) continue;
+      for (const name of linkNamesOfEntry(otherEntry, otherSlug)) {
+        if (!wanted.has(name)) continue;
+        const holderApp = isOwn ? null : entry.name;
+        throw new SkillsPayInstallError(
+          holderApp
+            ? `技能 ${name} 已被应用「${holderApp}」的技能 ${otherSlug} 安装；跨应用同名技能无法软连接，` +
+                `请先删除对应安装（rm -rf "${path.join(skillsRoot, holderApp, otherSlug)}"）`
+            : `技能 ${name} 已被本应用的技能 ${otherSlug} 安装；同名技能无法软连接，` +
+                `请让卖家调整技能名，或先删除该安装`,
+        );
+      }
+    }
+  }
 }
 
 /** 流式下载到临时文件，避免大包占满内存。 */
@@ -255,22 +382,20 @@ export async function installSkill(options: {
   const stagingDir = randomTmpDir();
 
   let files = 0;
+  let installed: { kind: SkillRepoKind; skills: string[] } | null = null;
   try {
     const archive = await readFile(tmpFile);
     const entries = await extractTarGzToDir(archive, stagingDir, { stripComponents: 1 });
     files = entries.filter((entry) => entry.type === 'file').length;
 
-    // 严格格式校验：仅支持单技能仓库（根目录必须直接包含 SKILL.md）
-    const { stat: statFile } = await import('node:fs/promises');
-    try {
-      const info = await statFile(path.join(stagingDir, 'SKILL.md'));
-      if (!info.isFile()) throw new Error('not a file');
-    } catch {
-      throw new SkillsPayInstallError(
-        `技能包格式错误：仓库根目录缺少 SKILL.md（仅支持单技能仓库格式——SKILL.md 必须位于仓库根目录，` +
-          `集合式仓库如 skills/<name>/SKILL.md 不受支持）。请联系卖家调整仓库结构，ref=${grant.ref}`,
-      );
-    }
+    // 格式探测：根 skills/ 目录（多技能集合仓）或根 SKILL.md（单技能仓）
+    const layout = await probeRepoLayout(stagingDir, grant.ref);
+    installed =
+      layout.kind === 'collection' ? { kind: 'collection', skills: layout.skills } : { kind: 'single', skills: [] };
+    const linkNames = layout.kind === 'collection' ? layout.skills : [grant.slug];
+
+    // 软连接名占用校验（集合仓内部技能名解包后才可知，落盘前拦截）
+    await assertLinkNamesAvailable(skillsRoot, app, grant.slug, linkNames);
 
     await mkdir(path.dirname(targetDir), { recursive: true });
     await rm(targetDir, { recursive: true, force: true });
@@ -281,6 +406,8 @@ export async function installSkill(options: {
       version: grant.version,
       ref: grant.ref,
       installedAt: new Date().toISOString(),
+      kind: layout.kind,
+      ...(layout.kind === 'collection' ? { skills: layout.skills } : {}),
     };
     await writeFile(path.join(targetDir, MANIFEST_FILENAME), `${JSON.stringify(manifest, null, 2)}\n`);
 
@@ -293,6 +420,8 @@ export async function installSkill(options: {
       version: grant.version,
       ref: grant.ref,
       installedAt: manifest.installedAt,
+      kind: layout.kind,
+      ...(layout.kind === 'collection' ? { skills: layout.skills } : {}),
     };
     await writeAppIndex(skillsRoot, app, index);
   } finally {
@@ -300,7 +429,13 @@ export async function installSkill(options: {
     await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
   }
 
-  return { slug: grant.slug, version: grant.version, files };
+  return {
+    slug: grant.slug,
+    version: grant.version,
+    files,
+    kind: installed!.kind,
+    skills: installed!.skills,
+  };
 }
 
 async function downloadWithFetch(grant: DownloadGrantPayload, fetchImpl: typeof fetch): Promise<string> {

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   APP_INDEX_FILENAME,
   findCrossAppSlugHolder,
+  linkNamesOfEntry,
   readAppIndex,
   skillInstallDir,
   writeAppIndex,
@@ -52,6 +53,43 @@ describe('readAppIndex', () => {
     expect(healed.skills).toEqual({});
   });
 
+  it('carries collection kind and inner skill names through reconciliation', async () => {
+    await mkdir(path.join(skillsDir, 'app-one', 'tool-pack', 'skills', 'alpha'), { recursive: true });
+    await writeFile(
+      path.join(skillsDir, 'app-one', 'tool-pack', '.skills-sync.json'),
+      JSON.stringify({
+        slug: 'tool-pack',
+        version: '1.0.0',
+        ref: 'v1.0.0',
+        installedAt: '2026-10-04T00:00:00Z',
+        kind: 'collection',
+        skills: ['alpha', 'beta'],
+      }),
+    );
+
+    const rebuilt = await readAppIndex(skillsDir, 'app-one');
+    expect(rebuilt.skills['tool-pack']).toMatchObject({
+      version: '1.0.0',
+      kind: 'collection',
+      skills: ['alpha', 'beta'],
+    });
+
+    // 内部技能名单变化（磁盘清单为准）：索引对账更新
+    await writeFile(
+      path.join(skillsDir, 'app-one', 'tool-pack', '.skills-sync.json'),
+      JSON.stringify({
+        slug: 'tool-pack',
+        version: '1.1.0',
+        ref: 'v1.1.0',
+        installedAt: '2026-10-04T00:00:00Z',
+        kind: 'collection',
+        skills: ['alpha'],
+      }),
+    );
+    const healed = await readAppIndex(skillsDir, 'app-one');
+    expect(healed.skills['tool-pack']).toMatchObject({ version: '1.1.0', skills: ['alpha'] });
+  });
+
   it('keeps app metadata and repairs corrupt index files', async () => {
     await mkdir(path.join(skillsDir, 'app-one'), { recursive: true });
     await writeAppIndex(skillsDir, 'app-one', {
@@ -71,6 +109,19 @@ describe('readAppIndex', () => {
     await writeFile(path.join(skillsDir, 'app-one', APP_INDEX_FILENAME), '{broken');
     const afterCorruption = await readAppIndex(skillsDir, 'app-one');
     expect(afterCorruption.skills).toEqual({});
+  });
+});
+
+describe('linkNamesOfEntry', () => {
+  it('uses inner skill names for collections and the slug otherwise', () => {
+    expect(linkNamesOfEntry({ kind: 'collection', skills: ['alpha', 'beta'] }, 'tool-pack')).toEqual([
+      'alpha',
+      'beta',
+    ]);
+    // 空名单/缺失名单/旧版清单（无 kind）：回退为 slug 本身
+    expect(linkNamesOfEntry({ kind: 'collection', skills: [] }, 'tool-pack')).toEqual(['tool-pack']);
+    expect(linkNamesOfEntry({ kind: 'collection' }, 'tool-pack')).toEqual(['tool-pack']);
+    expect(linkNamesOfEntry({}, 'pro-tool')).toEqual(['pro-tool']);
   });
 });
 

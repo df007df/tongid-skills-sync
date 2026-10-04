@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-import { resolveSkillsPayConfig, SkillsPayConfigError } from './config.js';
+import { clearDefaultApp, resolveSkillsPayConfig, writeGlobalConfig, SkillsPayConfigError } from './config.js';
 import { loginMachine, SkillsPayLoginError } from './auth.js';
 import { fetchRegistry, revokeCurrentMachine, SkillsPayApiError } from './api.js';
 import { DEFAULT_SKILLS_DIR, installSkill, planUpdate, readAppIndex, skillInstallDir, updateSkills } from './install.js';
-import { deleteCredential, loadCredential } from './store.js';
+import { deleteCredential, loadCredential, saveCredential } from './store.js';
 import { detectSkillPlatforms, findSkillPlatform, platformSkillsDir } from './platforms.js';
 import { linkSkillsToPlatform, unlinkSkillsFromPlatform } from './link.js';
 import os from 'node:os';
@@ -88,16 +88,17 @@ async function main(): Promise<void> {
         cliApp: flagValue(flags, 'app'),
         cliBaseUrl: flagValue(flags, 'base-url'),
       });
-      const { saveCredential } = await import('./store.js');
       const credential = await loginMachine({
         baseUrl: config.baseUrl,
         app: config.app,
         label: flagValue(flags, 'label') ?? undefined,
       });
       const file = await saveCredential(credential);
+      const configFile = await writeGlobalConfig({ app: config.app, baseUrl: config.baseUrl });
       process.stdout.write(
         `已绑定机器：${credential.label ?? '本机'}（${credential.machineToken.slice(0, 8)}…）\n` +
-          `凭据已保存：${file}\n`,
+          `凭据已保存：${file}\n` +
+          `默认应用已记录（${configFile}），后续命令可省略 --app\n`,
       );
       break;
     }
@@ -148,8 +149,12 @@ async function main(): Promise<void> {
           slug,
           skillsDir: flagValue(flags, 'dir') ?? DEFAULT_SKILLS_DIR,
         });
+        const detail =
+          result.kind === 'collection'
+            ? `${result.files} 个文件，集合仓含 ${result.skills.length} 个技能：${result.skills.join('、')}`
+            : `${result.files} 个文件`;
         process.stdout.write(
-          `已安装 ${result.slug} v${result.version}（${result.files} 个文件）→ ${skillInstallDir(flagValue(flags, 'dir') ?? DEFAULT_SKILLS_DIR, ctx.app, result.slug)}\n`,
+          `已安装 ${result.slug} v${result.version}（${detail}）→ ${skillInstallDir(flagValue(flags, 'dir') ?? DEFAULT_SKILLS_DIR, ctx.app, result.slug)}\n`,
         );
       } catch (error) {
         printApiError(error);
@@ -220,6 +225,7 @@ async function main(): Promise<void> {
         }
       }
       await deleteCredential(config.app);
+      await clearDefaultApp(config.app);
       process.stdout.write(`应用 ${config.app} 已解绑本机机器并删除本地凭据\n`);
       break;
     }
@@ -302,16 +308,16 @@ async function main(): Promise<void> {
           '命令：',
           '  login                打开平台登录并绑定本机机器授权码',
           '  list                 列出当前可安装的技能与最新版本',
-          '  install <slug>       安装技能包到 ~/.tongid/skills-sync/skills/<app>/<slug>',
+          '  install <slug>       安装技能包（根 SKILL.md 单技能仓，或根 skills/ 目录的多技能集合仓）',
           '  update [slug]        更新技能包（不带 slug 更新全部）',
-          '  link [--platform x]  软连接已安装技能到平台技能目录（默认全部已检测平台）',
+          '  link [--platform x]  软连接已安装技能到平台技能目录（集合仓按内部技能逐个连接；默认全部已检测平台）',
           '  unlink [--platform x] 移除平台技能目录中由本工具建立的软连接',
           '  logout               解绑本机机器授权码并删除本地凭据',
           '',
           '选项：',
-          '  --app <id|slug>      目标应用（或用 skills-sync.config.json / TONGID_SKILLS_APP）',
+          '  --app <id|slug>      目标应用（第一次 login 必传；之后默认取上次登录的应用，或用 TONGID_SKILLS_APP）',
           '  --base-url <url>     平台地址（本地开发如 http://localhost:3000；默认 https://tongid.dev）',
-          '  --dir <path>         技能统一目录（默认 ~/.tongid/skills-sync/skills/<app>/<slug>，全局唯一；跨应用同名 slug 安装会被拒绝）',
+          '  --dir <path>         技能统一目录（默认 ~/.tongid/skills-sync/skills/<app>/<slug>，全局唯一；跨应用同名技能——含集合仓内部技能名——安装会被拒绝）',
           '  --label <name>       机器备注名（默认 hostname）',
           '  --platform <id>      平台：claude/cursor/codex/gemini/agents/zcode/opencode；只连接目录已存在的平台，不主动创建',
         ].join('\n'),

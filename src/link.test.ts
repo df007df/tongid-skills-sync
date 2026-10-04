@@ -18,6 +18,21 @@ function writeManifest(app: string, slug: string, version = '1.0.0') {
   );
 }
 
+/** 集合仓安装：清单 kind=collection + skills 名单，内部技能位于 <slug>/skills/<name>/ */
+function writeCollectionManifest(app: string, slug: string, innerSkills: string[], version = '1.0.0') {
+  return writeFile(
+    path.join(skillsDir, app, slug, '.skills-sync.json'),
+    JSON.stringify({
+      slug,
+      version,
+      ref: `v${version}`,
+      installedAt: '2026-10-04T00:00:00Z',
+      kind: 'collection',
+      skills: innerSkills,
+    }),
+  );
+}
+
 beforeEach(async () => {
   const base = await mkdtemp(path.join(os.tmpdir(), 'skills-sync-link-'));
   skillsDir = path.join(base, 'skills');
@@ -45,6 +60,21 @@ describe('listManagedSkills', () => {
     ]);
     expect(managed[1]?.dir).toBe(path.join(skillsDir, 'app-one', 'pro-tool'));
     await expect(listManagedSkills('/nonexistent-dir')).resolves.toEqual([]);
+  });
+
+  it('expands collection installs into one link unit per inner skill', async () => {
+    await mkdir(path.join(skillsDir, 'app-one', 'tool-pack', 'skills', 'alpha'), { recursive: true });
+    await mkdir(path.join(skillsDir, 'app-one', 'tool-pack', 'skills', 'beta'), { recursive: true });
+    await writeCollectionManifest('app-one', 'tool-pack', ['alpha', 'beta']);
+
+    const managed = await listManagedSkills(skillsDir);
+    expect(managed.map((skill) => `${skill.app}/${skill.slug}`)).toEqual([
+      'app-one/alpha',
+      'app-one/beta',
+      'app-one/pro-tool',
+    ]);
+    expect(managed[0]?.dir).toBe(path.join(skillsDir, 'app-one', 'tool-pack', 'skills', 'alpha'));
+    expect(managed[1]?.dir).toBe(path.join(skillsDir, 'app-one', 'tool-pack', 'skills', 'beta'));
   });
 });
 
@@ -96,6 +126,51 @@ describe('linkSkillsToPlatform', () => {
       },
     ]);
     await expect(lstat(path.join(platformDir, 'pro-tool'))).rejects.toThrow();
+  });
+
+  it('links collection installs per inner skill and follows updates', async () => {
+    const inner = async (name: string, version = '1.0.0') => {
+      await mkdir(path.join(skillsDir, 'app-one', 'tool-pack', 'skills', name), { recursive: true });
+      await writeFile(path.join(skillsDir, 'app-one', 'tool-pack', 'skills', name, 'SKILL.md'), `# ${name}\n`);
+      return name;
+    };
+    await inner('alpha');
+    await inner('beta');
+    await writeCollectionManifest('app-one', 'tool-pack', ['alpha', 'beta']);
+
+    const outcomes = await linkSkillsToPlatform({ platformSkillsDir: platformDir, skillsDir });
+    expect(outcomes.map((item) => `${item.slug}:${item.status}`)).toEqual([
+      'alpha:linked',
+      'beta:linked',
+      'pro-tool:linked',
+    ]);
+
+    // 每个内部技能一条链接，指向 <app>/<repo-slug>/skills/<name>
+    for (const name of ['alpha', 'beta']) {
+      const info = await lstat(path.join(platformDir, name));
+      expect(info.isSymbolicLink()).toBe(true);
+      await expect(readdir(path.join(platformDir, name))).resolves.toContain('SKILL.md');
+    }
+
+    // 仓库更新新增内部技能：索引刷新后再次 link 自动出现新链接
+    await inner('gamma', '1.1.0');
+    await writeCollectionManifest('app-one', 'tool-pack', ['alpha', 'beta', 'gamma'], '1.1.0');
+    const refreshed = await linkSkillsToPlatform({ platformSkillsDir: platformDir, skillsDir });
+    expect(refreshed.map((item) => `${item.slug}:${item.status}`)).toEqual([
+      'alpha:refreshed',
+      'beta:refreshed',
+      'gamma:linked',
+      'pro-tool:refreshed',
+    ]);
+
+    // unlink：集合仓的每个内部技能链接都被移除
+    const unlinked = await unlinkSkillsFromPlatform({ platformSkillsDir: platformDir, skillsDir });
+    expect(unlinked.filter((item) => item.status === 'removed').map((item) => item.slug).sort()).toEqual([
+      'alpha',
+      'beta',
+      'gamma',
+      'pro-tool',
+    ]);
   });
 });
 

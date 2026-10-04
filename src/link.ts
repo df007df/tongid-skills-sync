@@ -1,15 +1,16 @@
 import { lstat, readlink, rm, symlink } from 'node:fs/promises';
 import path from 'node:path';
-import { readAppIndex, skillInstallDir } from './install.js';
+import { linkNamesOfEntry, readAppIndex, skillInstallDir } from './install.js';
 
 /**
  * 把统一维护目录（默认全局 ~/.tongid/skills-sync/skills/<app>/<slug>）里已安装的技能
  * 软连接到平台技能目录。
  *
- * - 目标名 = 技能 slug，指向 <app>/<slug> 的**绝对路径**：update 替换目录内容时路径不变，
- *   软连接自动跟随新版本；
+ * - 软连接单元：单技能仓 = <slug> 本身；多技能集合仓（kind=collection）按仓库内
+ *   skills/<name>/ 逐个展开，每个内部技能一条链接（链接名 = 内部技能名，指向
+ *   <app>/<slug>/skills/<name> 的绝对路径：update 替换目录内容时路径不变，软连接自动跟随新版本）；
  * - 技能发现走各应用索引（index.json，读取自带磁盘对账）；
- * - install 已前置拒绝跨应用同名 slug；此处对同名冲突（如手工拷贝产生的）防御性跳过；
+ * - install 已前置拒绝跨应用同名技能；此处对同名冲突（如手工拷贝产生的）防御性跳过；
  * - 只覆盖「指向本统一目录」的既有软连接；真实目录/文件/指向别处的软连接一律跳过并提示，
  *   不覆盖用户自己的内容；
  * - 平台技能目录由调用方保证存在（探测到才做连接），本模块绝不创建平台目录。
@@ -35,7 +36,7 @@ export type ManagedSkill = {
   dir: string;
 };
 
-/** 列出统一目录下所有应用已安装的技能（两层 <app>/<slug>，经应用索引发现）。 */
+/** 列出统一目录下所有应用已安装技能的软连接单元（集合仓按内部技能展开）。 */
 export async function listManagedSkills(skillsDir: string): Promise<ManagedSkill[]> {
   const { readdir } = await import('node:fs/promises');
   const root = path.resolve(skillsDir);
@@ -50,12 +51,20 @@ export async function listManagedSkills(skillsDir: string): Promise<ManagedSkill
   for (const entry of appDirs) {
     if (!entry.isDirectory()) continue;
     const index = await readAppIndex(root, entry.name);
-    for (const slug of Object.keys(index.skills)) {
-      managed.push({
-        app: index.app || entry.name,
-        slug,
-        dir: skillInstallDir(root, entry.name, slug),
-      });
+    for (const repoSlug of Object.keys(index.skills)) {
+      const indexEntry = index.skills[repoSlug]!;
+      const isCollection = indexEntry.kind === 'collection';
+      const repoDir = skillInstallDir(root, entry.name, repoSlug);
+      const names = isCollection
+        ? linkNamesOfEntry(indexEntry, repoSlug)
+        : [repoSlug];
+      for (const name of names) {
+        managed.push({
+          app: index.app || entry.name,
+          slug: name,
+          dir: isCollection ? path.join(repoDir, 'skills', name) : repoDir,
+        });
+      }
     }
   }
   return managed.sort((a, b) => a.slug.localeCompare(b.slug) || a.app.localeCompare(b.app));
