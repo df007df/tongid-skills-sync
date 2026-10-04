@@ -3,7 +3,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-  mergeCliHost,
   normalizeBaseUrl,
   resolveSkillsPayConfig,
   SkillsPayConfigError,
@@ -65,22 +64,5 @@ describe('resolveSkillsPayConfig', () => {
     expect(normalizeBaseUrl('https://a.com/')).toBe('https://a.com');
     expect(normalizeBaseUrl('  https://a.com/// ')).toBe('https://a.com');
     expect(normalizeBaseUrl('')).toBe('https://tongid.dev');
-  });
-
-  it('accepts host as a baseUrl alias in the project config file', async () => {
-    await writeFile(
-      path.join(cwd, 'skills-sync.config.json'),
-      JSON.stringify({ host: 'http://localhost:3000/', app: 'local-app' }),
-    );
-    const config = await resolveSkillsPayConfig({ cwd, env: {} });
-    expect(config).toEqual({ baseUrl: 'http://localhost:3000', app: 'local-app' });
-  });
-
-  it('merges cli --host over --base-url with host taking precedence', () => {
-    expect(mergeCliHost({ host: 'http://localhost:3000', baseUrl: 'https://tongid.dev' })).toBe(
-      'http://localhost:3000',
-    );
-    expect(mergeCliHost({ baseUrl: 'https://tongid.dev' })).toBe('https://tongid.dev');
-    expect(mergeCliHost({ host: '  ', baseUrl: null })).toBeNull();
   });
 });

@@ -19,10 +19,8 @@ export {
   resolveSkillsPayConfig,
   readProjectConfig,
   normalizeBaseUrl,
-  mergeCliHost,
   SkillsPayConfigError,
   type SkillsPayConfig,
-  type CliHostInput,
 } from './config.js';
 
 export {
