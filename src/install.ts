@@ -260,6 +260,18 @@ export async function installSkill(options: {
     const entries = await extractTarGzToDir(archive, stagingDir, { stripComponents: 1 });
     files = entries.filter((entry) => entry.type === 'file').length;
 
+    // 严格格式校验：仅支持单技能仓库（根目录必须直接包含 SKILL.md）
+    const { stat: statFile } = await import('node:fs/promises');
+    try {
+      const info = await statFile(path.join(stagingDir, 'SKILL.md'));
+      if (!info.isFile()) throw new Error('not a file');
+    } catch {
+      throw new SkillsPayInstallError(
+        `技能包格式错误：仓库根目录缺少 SKILL.md（仅支持单技能仓库格式——SKILL.md 必须位于仓库根目录，` +
+          `集合式仓库如 skills/<name>/SKILL.md 不受支持）。请联系卖家调整仓库结构，ref=${grant.ref}`,
+      );
+    }
+
     await mkdir(path.dirname(targetDir), { recursive: true });
     await rm(targetDir, { recursive: true, force: true });
     await import('node:fs/promises').then((fs) => fs.rename(stagingDir, targetDir));

@@ -54,6 +54,26 @@ function tarGz(version: string): Buffer {
   return gzipSync(Buffer.concat([header, content, padding, Buffer.alloc(1024)]));
 }
 
+/** 集合仓形态：根目录没有 SKILL.md（技能在子目录里） */
+function tarGzCollectionRepo(): Buffer {
+  const chunks: Buffer[] = [];
+  const entry = (name: string, content: Buffer) => {
+    const header = Buffer.alloc(512);
+    header.write(name, 0, 100, 'utf8');
+    header.write(content.length.toString(8).padStart(11, '0') + '\0', 124, 12, 'ascii');
+    header.write('0', 156, 1, 'ascii');
+    header.write('ustar\0', 257, 6, 'ascii');
+    let checksum = 0;
+    for (const byte of header) checksum += byte;
+    header.write(checksum.toString(8).padStart(6, '0') + '\0 ', 148, 8, 'ascii');
+    chunks.push(header, content, Buffer.alloc((512 - (content.length % 512)) % 512));
+  };
+  entry('repo-x/README.md', Buffer.from('# collection\n'));
+  entry('repo-x/skills/inner-tool/SKILL.md', Buffer.from('# inner\n'));
+  chunks.push(Buffer.alloc(1024));
+  return gzipSync(Buffer.concat(chunks));
+}
+
 type PlatformState = {
   skillVersion: string;
   grantToken: string | null;
@@ -246,6 +266,34 @@ describe('installSkill / planUpdate', () => {
     expect(index.app).toBe('app_1');
     // GitHub 直连请求确实携带了瞬时令牌
     expect(state.sawGithubToken).toBe('Bearer github_pat_secret');
+  }, 15_000);
+
+  it('rejects repos without a root SKILL.md (collection repos are not single-skill format)', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith(githubUrl)) {
+        return new Response(new Uint8Array(tarGzCollectionRepo()), { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      installSkill({
+        baseUrl: platformUrl,
+        machineToken: 't-mock-machine-token',
+        app: 'app_1',
+        slug: 'pro-tool',
+        skillsDir,
+        fetchImpl,
+      }),
+    ).rejects.toThrow(/根目录缺少 SKILL\.md/);
+
+    // 报错后不落任何安装目录，索引也不登记
+    const { stat } = await import('node:fs/promises');
+    await expect(stat(path.join(skillsDir, 'app_1', 'pro-tool'))).rejects.toThrow();
+    const { readAppIndex } = await import('./install.js');
+    const index = await readAppIndex(skillsDir, 'app_1');
+    expect(index.skills['pro-tool']).toBeUndefined();
   }, 15_000);
 
   it('rejects cross-app slug collisions before fetching any grant', async () => {
