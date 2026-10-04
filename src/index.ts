@@ -88,6 +88,7 @@ export {
   deleteCredential,
   listCredentials,
   defaultStoreDir,
+  defaultCertificateDir,
   defaultSkillsDir,
   type MachineCredential,
 } from './store.js';

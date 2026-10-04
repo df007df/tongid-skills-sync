@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { defaultSkillsDir, defaultStoreDir, deleteCredential, listCredentials, loadCredential, saveCredential } from './store.js';
+import { defaultCertificateDir, defaultSkillsDir, defaultStoreDir, deleteCredential, listCredentials, loadCredential, saveCredential } from './store.js';
 import type { MachineCredential } from './store.js';
 
 let storeDir: string;
@@ -57,6 +57,10 @@ describe('credential store', () => {
     // 技能统一目录是全局唯一的，与凭据同根
     expect(defaultSkillsDir('/home/alice')).toBe(
       path.join('/home/alice', '.tongid', 'skills-sync', 'skills'),
+    );
+    // 凭据在 certificate/ 子目录下
+    expect(defaultCertificateDir('/home/alice')).toBe(
+      path.join('/home/alice', '.tongid', 'skills-sync', 'certificate'),
     );
   });
 });

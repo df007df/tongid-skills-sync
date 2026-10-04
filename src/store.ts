@@ -3,8 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 /**
- * 机器授权凭据的本地存储：~/.tongid/skills-sync/<app>.json，每个应用一个文件，
- * 支持多应用并存。文件包含机器码明文，权限应保持 0600。
+ * 机器授权凭据的本地存储：~/.tongid/skills-sync/certificate/<app>.json，
+ * 每个应用一个文件，支持多应用并存。文件包含机器码明文，权限应保持 0600。
  */
 
 export const STORE_DIR_NAME = path.join('.tongid', 'skills-sync');
@@ -23,6 +23,11 @@ export type MachineCredential = {
 
 export function defaultStoreDir(home: string = os.homedir()): string {
   return path.join(home, STORE_DIR_NAME);
+}
+
+/** 凭据目录：~/.tongid/skills-sync/certificate（与 skills/ 安装目录、全局配置同根）。 */
+export function defaultCertificateDir(home: string = os.homedir()): string {
+  return path.join(defaultStoreDir(home), 'certificate');
 }
 
 /**
@@ -45,7 +50,7 @@ export function sanitizeAppKey(app: string): string {
 
 export async function saveCredential(
   credential: MachineCredential,
-  storeDir: string = defaultStoreDir(),
+  storeDir: string = defaultCertificateDir(),
 ): Promise<string> {
   await mkdir(storeDir, { recursive: true });
   const file = path.join(storeDir, safeFileName(credential.app));
@@ -55,7 +60,7 @@ export async function saveCredential(
 
 export async function loadCredential(
   app: string,
-  storeDir: string = defaultStoreDir(),
+  storeDir: string = defaultCertificateDir(),
 ): Promise<MachineCredential | null> {
   const file = path.join(storeDir, safeFileName(app));
   let raw: string;
@@ -75,7 +80,7 @@ export async function loadCredential(
 
 export async function deleteCredential(
   app: string,
-  storeDir: string = defaultStoreDir(),
+  storeDir: string = defaultCertificateDir(),
 ): Promise<boolean> {
   const file = path.join(storeDir, safeFileName(app));
   try {
@@ -87,7 +92,7 @@ export async function deleteCredential(
 }
 
 export async function listCredentials(
-  storeDir: string = defaultStoreDir(),
+  storeDir: string = defaultCertificateDir(),
 ): Promise<MachineCredential[]> {
   let files: string[];
   try {

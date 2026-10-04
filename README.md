@@ -30,7 +30,7 @@ tongid-skills-sync login --app <applicationId 或 slug>
 - 环境变量：`TONGID_SKILLS_APP`、`TONGID_BASE_URL`
 - 优先级：命令行参数 > 环境变量 > 全局配置文件
 
-登录成功后凭据写入 `~/.tongid/skills-sync/<app>.json`（每应用一个文件，多应用并存）。
+登录成功后凭据写入 `~/.tongid/skills-sync/certificate/<app>.json`（每应用一个文件，多应用并存）。
 
 ## CLI
 
