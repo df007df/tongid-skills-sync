@@ -301,6 +301,38 @@ describe('installSkill / planUpdate', () => {
     expect(state.sawGithubToken).toBe('Bearer github_pat_secret');
   }, 15_000);
 
+  it('emits install progress events: grant → download bytes → extract', async () => {
+    const archive = tarGz('1.4.0');
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith(githubUrl)) {
+        return new Response(new Uint8Array(archive), {
+          status: 200,
+          headers: { 'content-length': String(archive.byteLength) },
+        });
+      }
+      return new Response('{}', { status: 404 });
+    }) as unknown as typeof fetch;
+
+    const events: Array<{ phase: string; received?: number; total?: number | null }> = [];
+    await installSkill({
+      baseUrl: platformUrl,
+      machineToken: 't-mock-machine-token',
+      app: 'app_1',
+      slug: 'pro-tool',
+      skillsDir,
+      fetchImpl,
+      onProgress: (event) => events.push(event),
+    });
+
+    expect(events[0]?.phase).toBe('grant');
+    const downloads = events.filter((e) => e.phase === 'download');
+    expect(downloads.length).toBeGreaterThan(0);
+    expect(downloads[downloads.length - 1]?.received).toBe(archive.byteLength);
+    expect(downloads.every((e) => e.total === archive.byteLength)).toBe(true);
+    expect(events[events.length - 1]?.phase).toBe('extract');
+  }, 15_000);
+
   it('installs collection repos (root skills/ dir) with per-skill layout and manifest kind', async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

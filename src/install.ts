@@ -2,7 +2,7 @@ import { createWriteStream } from 'node:fs';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { Readable } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import {
   fetchDownloadGrant,
@@ -11,6 +11,7 @@ import {
   type RegistryPayload,
 } from './api.js';
 import { detectSkillPlatforms } from './platforms.js';
+import type { InstallProgressEvent } from './progress.js';
 import { defaultSkillsDir, sanitizeAppKey } from './store.js';
 import { extractTarGzToDir } from './tar.js';
 
@@ -329,8 +330,12 @@ async function assertLinkNamesAvailable(
   }
 }
 
-/** 流式下载到临时文件，避免大包占满内存。 */
-async function downloadToFile(url: string, authorization: string | null): Promise<string> {
+/** 流式下载到临时文件，避免大包占满内存；经 onProgress 上报已下载字节（total 无 content-length 时为 null）。 */
+async function downloadToFile(
+  url: string,
+  authorization: string | null,
+  onProgress?: (event: InstallProgressEvent) => void,
+): Promise<string> {
   const tmpFile = `${randomTmpDir()}.tgz`;
   const headers: Record<string, string> = { 'user-agent': 'tongid-skills-sync' };
   if (authorization) headers.authorization = authorization;
@@ -339,8 +344,19 @@ async function downloadToFile(url: string, authorization: string | null): Promis
   if (!response.ok || !response.body) {
     throw new SkillsPayInstallError(`技能包下载失败：GitHub 返回 HTTP ${response.status}`);
   }
+  const lengthHeader = Number(response.headers.get('content-length'));
+  const total = Number.isFinite(lengthHeader) && lengthHeader > 0 ? lengthHeader : null;
+
+  let received = 0;
+  const counter = new Transform({
+    transform(chunk: Buffer, _enc, callback) {
+      received += chunk.length;
+      onProgress?.({ phase: 'download', received, total });
+      callback(null, chunk);
+    },
+  });
   const stream = Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]);
-  await pipeline(stream, createWriteStream(tmpFile));
+  await pipeline(stream, counter, createWriteStream(tmpFile));
   return tmpFile;
 }
 
@@ -385,6 +401,8 @@ export async function installSkill(options: {
   /** home 目录（平台软链探测/清理用；默认 os.homedir()，测试可注入） */
   homeDir?: string;
   fetchImpl?: typeof fetch;
+  /** 安装进度回调（领取凭据/下载字节/解压），CLI 渲染进度条用 */
+  onProgress?: (event: InstallProgressEvent) => void;
 }): Promise<InstallResult> {
   const app = options.app.trim();
   if (!app) {
@@ -402,6 +420,7 @@ export async function installSkill(options: {
     );
   }
 
+  options.onProgress?.({ phase: 'grant' });
   const grant: DownloadGrantPayload = await fetchDownloadGrant({
     baseUrl: options.baseUrl,
     machineToken: options.machineToken,
@@ -411,7 +430,7 @@ export async function installSkill(options: {
   const previousFetch = globalThis.fetch;
   const fetchImpl = options.fetchImpl ?? previousFetch;
   // downloadToFile 内部 fetch 需要直连 GitHub；允许注入便于测试
-  const tmpFile = await downloadWithFetch(grant, fetchImpl);
+  const tmpFile = await downloadWithFetch(grant, fetchImpl, options.onProgress);
 
   const targetDir = skillInstallDir(skillsRoot, app, grant.slug);
   const stagingDir = randomTmpDir();
@@ -420,6 +439,7 @@ export async function installSkill(options: {
   let installed: { kind: SkillRepoKind; skills: string[] } | null = null;
   let pruned: string[] = [];
   try {
+    options.onProgress?.({ phase: 'extract' });
     const archive = await readFile(tmpFile);
     const entries = await extractTarGzToDir(archive, stagingDir, { stripComponents: 1 });
     files = entries.filter((entry) => entry.type === 'file').length;
@@ -502,12 +522,18 @@ export async function installSkill(options: {
   };
 }
 
-async function downloadWithFetch(grant: DownloadGrantPayload, fetchImpl: typeof fetch): Promise<string> {
-  if (!fetchImpl || fetchImpl === globalThis.fetch) return downloadToFile(grant.url, grant.authorization);
+async function downloadWithFetch(
+  grant: DownloadGrantPayload,
+  fetchImpl: typeof fetch,
+  onProgress?: (event: InstallProgressEvent) => void,
+): Promise<string> {
+  if (!fetchImpl || fetchImpl === globalThis.fetch) {
+    return downloadToFile(grant.url, grant.authorization, onProgress);
+  }
   const previous = globalThis.fetch;
   try {
     (globalThis as { fetch: typeof fetch }).fetch = fetchImpl;
-    return await downloadToFile(grant.url, grant.authorization);
+    return await downloadToFile(grant.url, grant.authorization, onProgress);
   } finally {
     (globalThis as { fetch: typeof fetch }).fetch = previous;
   }
@@ -572,6 +598,7 @@ export async function updateSkills(options: {
   app: string;
   skillsDir?: string;
   fetchImpl?: typeof fetch;
+  onProgress?: (event: InstallProgressEvent) => void;
 }): Promise<InstallResult[]> {
   const plan = await planUpdate(options);
   const results: InstallResult[] = [];
@@ -584,6 +611,7 @@ export async function updateSkills(options: {
         slug: item.slug,
         skillsDir: options.skillsDir,
         fetchImpl: options.fetchImpl,
+        onProgress: options.onProgress,
       }),
     );
   }

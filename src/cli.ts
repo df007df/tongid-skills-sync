@@ -6,6 +6,7 @@ import { DEFAULT_SKILLS_DIR, installSkill, planUpdate, readAppIndex, skillInstal
 import { deleteCredential, loadCredential, saveCredential } from './store.js';
 import { detectSkillPlatforms, findSkillPlatform, platformSkillsDir } from './platforms.js';
 import { linkSkillsToPlatform, unlinkSkillsFromPlatform } from './link.js';
+import { createInstallProgressReporter } from './progress.js';
 import os from 'node:os';
 
 /** 手写参数解析（零依赖）：tongid-skills-sync <command> [args] [--app x] [--base-url x] [--dir x] [--label x] [--platform x] */
@@ -155,6 +156,7 @@ async function main(): Promise<void> {
           app: ctx.app,
           slug,
           skillsDir: flagValue(flags, 'dir') ?? DEFAULT_SKILLS_DIR,
+          onProgress: createInstallProgressReporter(),
         });
         const detail =
           result.kind === 'collection'
@@ -193,6 +195,7 @@ async function main(): Promise<void> {
             app: ctx.app,
             slug: only,
             skillsDir,
+            onProgress: createInstallProgressReporter(),
           });
           process.stdout.write(
             `${result.slug} ${outdatedEntry.from ? `v${outdatedEntry.from} → ` : ''}v${result.version} 更新完成\n`,
@@ -201,7 +204,13 @@ async function main(): Promise<void> {
           break;
         }
 
-        const results = await updateSkills({ baseUrl: ctx.baseUrl, machineToken: ctx.machineToken, app: ctx.app, skillsDir });
+        const results = await updateSkills({
+          baseUrl: ctx.baseUrl,
+          machineToken: ctx.machineToken,
+          app: ctx.app,
+          skillsDir,
+          onProgress: createInstallProgressReporter(),
+        });
         if (results.length === 0) {
           process.stdout.write('全部技能均为最新版本\n');
         } else {
