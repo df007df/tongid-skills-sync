@@ -55,8 +55,12 @@ export async function readProjectConfig(
   }
   const record = parsed as Record<string, unknown>;
   const config: Partial<SkillsPayConfig> = {};
-  if (typeof record.baseUrl === 'string' && record.baseUrl.trim()) {
-    config.baseUrl = normalizeBaseUrl(record.baseUrl);
+  // host 是 baseUrl 的别名：本地开发/自建平台可用更短的写法
+  const hostRaw =
+    (typeof record.baseUrl === 'string' && record.baseUrl.trim()) ||
+    (typeof record.host === 'string' && record.host.trim());
+  if (hostRaw) {
+    config.baseUrl = normalizeBaseUrl(hostRaw as string);
   }
   if (typeof record.app === 'string' && record.app.trim()) {
     config.app = record.app.trim();
@@ -93,4 +97,15 @@ export async function resolveSkillsPayConfig(input: {
   );
 
   return { baseUrl, app };
+}
+
+export type CliHostInput = {
+  /** --host 与 --base-url 等价（host 是面向本地开发/自建平台的别名） */
+  host?: string | null;
+  baseUrl?: string | null;
+};
+
+/** CLI 侧把 --host / --base-url 合并成一个 base-url 值；--host 优先（更近的显式指定）。 */
+export function mergeCliHost(input: CliHostInput): string | null {
+  return input.host?.trim() || input.baseUrl?.trim() || null;
 }

@@ -19,12 +19,14 @@ npx tongid-skills-sync login --app <applicationId 或 slug>
 
 三种来源，优先级：命令行参数 > 项目配置文件 > 环境变量。
 
-1. 命令行：`--app <id|slug>`、`--base-url <url>`（默认 `https://tongid.dev`）
+1. 命令行：`--app <id|slug>`、`--host <url>`（`--base-url` 同义；默认 `https://tongid.dev`，本地开发如 `--host http://localhost:3000`）
 2. `skills-sync.config.json`（项目根，可提交进仓库供团队共用）：
 
    ```json
-   { "baseUrl": "https://tongid.dev", "app": "my-skill-app" }
+   { "host": "https://tongid.dev", "app": "my-skill-app" }
    ```
+
+   `host` 与 `baseUrl` 等价，任写其一（本地联调写 `"host": "http://localhost:3000"`）。
 
 3. 环境变量：`TONGID_SKILLS_APP`、`TONGID_BASE_URL`
 

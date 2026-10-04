@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { resolveSkillsPayConfig, SkillsPayConfigError } from './config.js';
+import { mergeCliHost, resolveSkillsPayConfig, SkillsPayConfigError } from './config.js';
 import { loginMachine, SkillsPayLoginError } from './auth.js';
 import { fetchRegistry, revokeCurrentMachine, SkillsPayApiError } from './api.js';
 import { DEFAULT_SKILLS_DIR, installSkill, planUpdate, readAppIndex, skillInstallDir, updateSkills } from './install.js';
@@ -8,7 +8,15 @@ import { detectSkillPlatforms, findSkillPlatform, platformSkillsDir } from './pl
 import { linkSkillsToPlatform, unlinkSkillsFromPlatform } from './link.js';
 import os from 'node:os';
 
-/** 手写参数解析（零依赖）：tongid-skills-sync <command> [args] [--app x] [--base-url x] [--dir x] [--label x] [--platform x] */
+/** 手写参数解析（零依赖）：tongid-skills-sync <command> [args] [--app x] [--host/--base-url x] [--dir x] [--label x] [--platform x] */
+
+/** --host 与 --base-url 等价（host 优先），未指定返回 null 走配置/环境变量/默认线上地址。 */
+function cliHost(flags: Record<string, string | boolean>): string | null {
+  return mergeCliHost({
+    host: flagValue(flags, 'host'),
+    baseUrl: flagValue(flags, 'base-url'),
+  });
+}
 
 type ParsedArgs = {
   command: string;
@@ -20,7 +28,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   const [command = '', ...rest] = argv;
   const positional: string[] = [];
   const flags: Record<string, string | boolean> = {};
-  const valueFlags = new Set(['app', 'base-url', 'dir', 'label', 'platform']);
+  const valueFlags = new Set(['app', 'host', 'base-url', 'dir', 'label', 'platform']);
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i];
     if (arg.startsWith('--')) {
@@ -86,7 +94,7 @@ async function main(): Promise<void> {
     case 'login': {
       const config = await resolveSkillsPayConfig({
         cliApp: flagValue(flags, 'app'),
-        cliBaseUrl: flagValue(flags, 'base-url'),
+        cliBaseUrl: cliHost(flags),
       });
       const { saveCredential } = await import('./store.js');
       const credential = await loginMachine({
@@ -105,7 +113,7 @@ async function main(): Promise<void> {
     case 'list': {
       const ctx = await requireCredential({
         app: flagValue(flags, 'app'),
-        baseUrl: flagValue(flags, 'base-url'),
+        baseUrl: cliHost(flags) ?? undefined,
       });
       try {
         const registry = await fetchRegistry({ baseUrl: ctx.baseUrl, machineToken: ctx.machineToken });
@@ -138,7 +146,7 @@ async function main(): Promise<void> {
       if (!slug) fail('用法：tongid-skills-sync install <slug>');
       const ctx = await requireCredential({
         app: flagValue(flags, 'app'),
-        baseUrl: flagValue(flags, 'base-url'),
+        baseUrl: cliHost(flags) ?? undefined,
       });
       try {
         const result = await installSkill({
@@ -160,7 +168,7 @@ async function main(): Promise<void> {
     case 'update': {
       const ctx = await requireCredential({
         app: flagValue(flags, 'app'),
-        baseUrl: flagValue(flags, 'base-url'),
+        baseUrl: cliHost(flags) ?? undefined,
       });
       const skillsDir = flagValue(flags, 'dir') ?? DEFAULT_SKILLS_DIR;
       const only = positional[0] ?? null;
@@ -204,7 +212,7 @@ async function main(): Promise<void> {
     case 'logout': {
       const config = await resolveSkillsPayConfig({
         cliApp: flagValue(flags, 'app'),
-        cliBaseUrl: flagValue(flags, 'base-url'),
+        cliBaseUrl: cliHost(flags),
       });
       const credential = await loadCredential(config.app);
       if (!credential) {
@@ -310,7 +318,8 @@ async function main(): Promise<void> {
           '',
           '选项：',
           '  --app <id|slug>      目标应用（或用 skills-sync.config.json / TONGID_SKILLS_APP）',
-          '  --base-url <url>     平台地址（默认 https://tongid.dev，或 TONGID_BASE_URL）',
+          '  --host <url>          平台地址（本地开发如 http://localhost:3000；--base-url 同义）',
+          '                       默认 https://tongid.dev，或配置文件 / TONGID_BASE_URL',
           '  --dir <path>         技能统一目录（默认 ~/.tongid/skills-sync/skills/<app>/<slug>，全局唯一；跨应用同名 slug 安装会被拒绝）',
           '  --label <name>       机器备注名（默认 hostname）',
           '  --platform <id>      平台：claude/cursor/codex/gemini/agents/zcode/opencode；只连接目录已存在的平台，不主动创建',
