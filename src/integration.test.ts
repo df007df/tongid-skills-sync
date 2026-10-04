@@ -173,7 +173,7 @@ describe('loginMachine', () => {
     expect(parsed.pathname).toBe('/auth/login');
     expect(parsed.searchParams.get('applicationId')).toBe('app_1');
     const redirect = parsed.searchParams.get('redirect') ?? '';
-    expect(redirect).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/skills-pay\/callback$/);
+    expect(redirect).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/skills-sync\/callback$/);
     expect(parsed.searchParams.get('code_challenge')).toBeTruthy();
 
     const callbackResponse = await fetch(

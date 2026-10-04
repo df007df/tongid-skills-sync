@@ -201,7 +201,7 @@ function randomTmpDir(): string {
 /** 流式下载到临时文件，避免大包占满内存。 */
 async function downloadToFile(url: string, authorization: string | null): Promise<string> {
   const tmpFile = `${randomTmpDir()}.tgz`;
-  const headers: Record<string, string> = { 'user-agent': 'tongid-skills-pay-sdk' };
+  const headers: Record<string, string> = { 'user-agent': 'tongid-skills-sync' };
   if (authorization) headers.authorization = authorization;
 
   const response = await fetch(url, { headers, redirect: 'follow' });

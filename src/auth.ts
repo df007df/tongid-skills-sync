@@ -11,14 +11,14 @@ import type { MachineCredential } from './store.js';
  * 回调端口默认 43175（与 tongid-board 的 43173 互不占用），平台仅对
  * 开启技能售卖的应用放行该 loopback 回调。
  *
- * 注意：CALLBACK_PATH 与 SKILLS_PAY_CLIENT_TYPE 是与 TongID 平台的 OAuth 协议契约
- * （tongid 仓 lib/auth/skills-pay-oauth.ts），标识「技能售卖机器授权」流程，
- * 与 npm 包名（tongid-skills-sync）无关，勿随包改名。
+ * CALLBACK_PATH 与 SKILLS_SYNC_CLIENT_TYPE 是与 TongID 平台的 OAuth 协议契约
+ * （tongid 仓 lib/auth/skills-sync-oauth.ts），两侧取值必须一致：
+ * client_type=tongid-skills-sync，回调 /skills-sync/callback。
  */
 
 export const DEFAULT_CALLBACK_PORT = 43175;
-export const CALLBACK_PATH = '/skills-pay/callback';
-export const SKILLS_PAY_CLIENT_TYPE = 'tongid-skills-pay';
+export const CALLBACK_PATH = '/skills-sync/callback';
+export const SKILLS_SYNC_CLIENT_TYPE = 'tongid-skills-sync';
 const CALLBACK_TIMEOUT_MS = 5 * 60 * 1000;
 
 export type LoginMachineOptions = {
@@ -66,7 +66,7 @@ async function exchangeCodeForSession(options: {
     grant_type: 'authorization_code',
     code: options.code,
     code_verifier: options.codeVerifier,
-    client_type: SKILLS_PAY_CLIENT_TYPE,
+    client_type: SKILLS_SYNC_CLIENT_TYPE,
     application_id: options.app,
   });
   const response = await options.fetchImpl(new URL('/api/v1/oauth/token', options.baseUrl), {

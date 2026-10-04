@@ -75,4 +75,4 @@ await updateSkills({ baseUrl: credential.baseUrl, machineToken: credential.machi
 
 ## 与平台协议的关系
 
-`client_type=tongid-skills-pay`、回调路径 `/skills-pay/callback`、端口 43175 是与 TongID 平台的 OAuth 协议契约（标识「技能售卖机器授权」流程），与本 npm 包名无关；平台侧对应实现在 tongid 仓 `lib/auth/skills-pay-oauth.ts`。
+`client_type=tongid-skills-sync`、回调路径 `/skills-sync/callback`、端口 43175 是与 TongID 平台的 OAuth 协议契约（标识「技能售卖机器授权」流程），两侧取值一致；平台侧对应实现在 tongid 仓 `lib/auth/skills-sync-oauth.ts`。

@@ -27,7 +27,7 @@ export {
   loginMachine,
   DEFAULT_CALLBACK_PORT,
   CALLBACK_PATH,
-  SKILLS_PAY_CLIENT_TYPE,
+  SKILLS_SYNC_CLIENT_TYPE,
   SkillsPayLoginError,
   type LoginMachineOptions,
 } from './auth.js';
