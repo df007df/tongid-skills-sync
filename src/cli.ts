@@ -2,7 +2,7 @@
 import { clearDefaultApp, resolveSkillsPayConfig, writeGlobalConfig, SkillsPayConfigError } from './config.js';
 import { loginMachine, SkillsPayLoginError } from './auth.js';
 import { fetchRegistry, revokeCurrentMachine, SkillsPayApiError } from './api.js';
-import { DEFAULT_SKILLS_DIR, installSkill, planUpdate, readAppIndex, skillInstallDir, updateSkills } from './install.js';
+import { DEFAULT_SKILLS_DIR, installSkill, planUpdate, readAppIndex, skillInstallDir, updateSkills, type InstallResult } from './install.js';
 import { deleteCredential, loadCredential, saveCredential } from './store.js';
 import { detectSkillPlatforms, findSkillPlatform, platformSkillsDir } from './platforms.js';
 import { linkSkillsToPlatform, unlinkSkillsFromPlatform } from './link.js';
@@ -77,6 +77,13 @@ function printApiError(error: unknown): void {
     fail(`${error.message}${hint}`);
   }
   throw error;
+}
+
+/** update 后打印被清理的失效软链（新版已不包含的技能）。 */
+function printPrunedLinks(result: InstallResult): void {
+  if (result.pruned.length > 0) {
+    process.stdout.write(`  已移除失效软链（新版已不包含）：${result.pruned.join('、')}\n`);
+  }
 }
 
 async function main(): Promise<void> {
@@ -156,6 +163,7 @@ async function main(): Promise<void> {
         process.stdout.write(
           `已安装 ${result.slug} v${result.version}（${detail}）→ ${skillInstallDir(flagValue(flags, 'dir') ?? DEFAULT_SKILLS_DIR, ctx.app, result.slug)}\n`,
         );
+        printPrunedLinks(result);
       } catch (error) {
         printApiError(error);
       }
@@ -189,6 +197,7 @@ async function main(): Promise<void> {
           process.stdout.write(
             `${result.slug} ${outdatedEntry.from ? `v${outdatedEntry.from} → ` : ''}v${result.version} 更新完成\n`,
           );
+          printPrunedLinks(result);
           break;
         }
 
@@ -198,6 +207,7 @@ async function main(): Promise<void> {
         } else {
           for (const result of results) {
             process.stdout.write(`${result.slug} → v${result.version}（${result.files} 个文件）\n`);
+            printPrunedLinks(result);
           }
         }
       } catch (error) {

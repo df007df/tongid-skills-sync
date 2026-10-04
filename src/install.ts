@@ -10,6 +10,7 @@ import {
   type DownloadGrantPayload,
   type RegistryPayload,
 } from './api.js';
+import { detectSkillPlatforms } from './platforms.js';
 import { defaultSkillsDir, sanitizeAppKey } from './store.js';
 import { extractTarGzToDir } from './tar.js';
 
@@ -35,8 +36,9 @@ import { extractTarGzToDir } from './tar.js';
  * → 直连 GitHub 流式下载到临时文件（不经平台转发）→ 解压到统一目录
  * → 探测格式并校验软连接名占用 → 写入版本清单与应用索引 → 令牌即弃（只存在于函数栈内，不落盘）。
  *
- * 已知取舍：集合仓 update 后若删除了某个内部技能，其旧软连接会悬空（下次 link 报
- * 目录缺失），需手工移除；新增内部技能在下一次 link 时自动出现。
+ * update 自动清理失效软链：新版仓库删除（或换源，如单技能↔集合仓转换）的技能名，
+ * 其在各平台目录中由本工具建立的软连接会在安装成功后一并移除；外来条目（真实目录/
+ * 指向别处的链接）一律不动。新增内部技能在下一次 link 时自动出现。
  */
 
 export const MANIFEST_FILENAME = '.skills-sync.json';
@@ -223,6 +225,8 @@ export type InstallResult = {
   kind: SkillRepoKind;
   /** collection：包含的技能名；single 为空数组 */
   skills: string[];
+  /** update 后被清理的失效软链（`平台/技能名`，仅本工具建立的） */
+  pruned: string[];
 };
 
 export class SkillsPayInstallError extends Error {
@@ -340,6 +344,35 @@ async function downloadToFile(url: string, authorization: string | null): Promis
   return tmpFile;
 }
 
+/**
+ * 移除平台技能目录中因更新而失效的软连接：只删「指向被替换安装目录」的本工具链接，
+ * 同名的外来条目（真实目录/文件/指向别处的链接）一律保留。返回 `平台/技能名` 列表。
+ */
+async function pruneStaleSkillLinks(
+  homeDir: string,
+  stale: Array<{ name: string; dir: string }>,
+): Promise<string[]> {
+  if (stale.length === 0) return [];
+  const { lstat, readlink, rm } = await import('node:fs/promises');
+  const pruned: string[] = [];
+  for (const platform of detectSkillPlatforms(homeDir)) {
+    for (const unit of stale) {
+      const linkPath = path.join(platform.skillsDir, unit.name);
+      try {
+        const info = await lstat(linkPath);
+        if (!info.isSymbolicLink()) continue;
+        const linked = await readlink(linkPath);
+        if (path.resolve(path.dirname(linkPath), linked) !== path.resolve(unit.dir)) continue;
+        await rm(linkPath, { force: true });
+        pruned.push(`${platform.id}/${unit.name}`);
+      } catch {
+        // 平台目录无此条目或读取失败：跳过（清理是尽力而为）
+      }
+    }
+  }
+  return pruned;
+}
+
 /** 安装单个技能：占用校验 → 领取凭据 → 下载 → 解压 → 更新应用索引。下载令牌仅在栈内瞬时存在。 */
 export async function installSkill(options: {
   baseUrl: string;
@@ -349,6 +382,8 @@ export async function installSkill(options: {
   slug: string;
   /** 技能统一目录（默认全局 ~/.tongid/skills-sync/skills） */
   skillsDir?: string;
+  /** home 目录（平台软链探测/清理用；默认 os.homedir()，测试可注入） */
+  homeDir?: string;
   fetchImpl?: typeof fetch;
 }): Promise<InstallResult> {
   const app = options.app.trim();
@@ -383,6 +418,7 @@ export async function installSkill(options: {
 
   let files = 0;
   let installed: { kind: SkillRepoKind; skills: string[] } | null = null;
+  let pruned: string[] = [];
   try {
     const archive = await readFile(tmpFile);
     const entries = await extractTarGzToDir(archive, stagingDir, { stripComponents: 1 });
@@ -396,6 +432,22 @@ export async function installSkill(options: {
 
     // 软连接名占用校验（集合仓内部技能名解包后才可知，落盘前拦截）
     await assertLinkNamesAvailable(skillsRoot, app, grant.slug, linkNames);
+
+    // 旧安装的软链单元（update 场景）：目录被替换前读取，安装成功后据此清理失效软链
+    let previousUnits: Array<{ name: string; dir: string }> = [];
+    try {
+      const oldManifest = JSON.parse(
+        await readFile(path.join(targetDir, MANIFEST_FILENAME), 'utf8'),
+      ) as InstalledManifest;
+      if (oldManifest?.slug) {
+        previousUnits = linkNamesOfEntry(oldManifest, oldManifest.slug).map((name) => ({
+          name,
+          dir: oldManifest.kind === 'collection' ? path.join(targetDir, 'skills', name) : targetDir,
+        }));
+      }
+    } catch {
+      // 无旧安装（全新 install）：无需清理
+    }
 
     await mkdir(path.dirname(targetDir), { recursive: true });
     await rm(targetDir, { recursive: true, force: true });
@@ -424,6 +476,17 @@ export async function installSkill(options: {
       ...(layout.kind === 'collection' ? { skills: layout.skills } : {}),
     };
     await writeAppIndex(skillsRoot, app, index);
+
+    // 清理失效软链：新版已不含（或换源，如单技能↔集合仓转换）的技能名，
+    // 只移除各平台目录中指向本安装目录的本工具链接
+    const nextDirs = new Map(
+      linkNames.map((name) => [
+        name,
+        layout.kind === 'collection' ? path.join(targetDir, 'skills', name) : targetDir,
+      ]),
+    );
+    const stale = previousUnits.filter((unit) => nextDirs.get(unit.name) !== unit.dir);
+    pruned = await pruneStaleSkillLinks(options.homeDir ?? os.homedir(), stale);
   } finally {
     await rm(tmpFile, { force: true });
     await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
@@ -435,6 +498,7 @@ export async function installSkill(options: {
     files,
     kind: installed!.kind,
     skills: installed!.skills,
+    pruned,
   };
 }
 

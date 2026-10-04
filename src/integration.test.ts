@@ -54,8 +54,8 @@ function tarGz(version: string): Buffer {
   return gzipSync(Buffer.concat([header, content, padding, Buffer.alloc(1024)]));
 }
 
-/** 集合仓形态：根目录有 skills/ 目录，技能在子目录里 */
-function tarGzCollectionRepo(): Buffer {
+/** 集合仓形态：根目录有 skills/ 目录，技能在子目录里（按传入名单生成） */
+function tarGzCollectionRepoWith(names: string[]): Buffer {
   const chunks: Buffer[] = [];
   const entry = (name: string, content: Buffer) => {
     const header = Buffer.alloc(512);
@@ -69,11 +69,16 @@ function tarGzCollectionRepo(): Buffer {
     chunks.push(header, content, Buffer.alloc((512 - (content.length % 512)) % 512));
   };
   entry('repo-x/README.md', Buffer.from('# collection\n'));
-  entry('repo-x/skills/inner-tool/SKILL.md', Buffer.from('# inner\n'));
-  entry('repo-x/skills/second-tool/SKILL.md', Buffer.from('# second\n'));
+  for (const name of names) {
+    entry(`repo-x/skills/${name}/SKILL.md`, Buffer.from(`# ${name}\n`));
+  }
   entry('repo-x/skills/not-a-skill/notes.txt', Buffer.from('skip me\n'));
   chunks.push(Buffer.alloc(1024));
   return gzipSync(Buffer.concat(chunks));
+}
+
+function tarGzCollectionRepo(): Buffer {
+  return tarGzCollectionRepoWith(['inner-tool', 'second-tool']);
 }
 
 /** 完全不合规形态：根目录既没有 SKILL.md 也没有 skills/ 目录 */
@@ -280,6 +285,7 @@ describe('installSkill / planUpdate', () => {
       files: expect.any(Number),
       kind: 'single',
       skills: [],
+      pruned: [],
     });
     // 两层布局：<root>/<app>/<slug>，且应用索引登记了版本
     const manifest = await readInstalledManifest('app_1', 'pro-tool', skillsDir);
@@ -320,6 +326,7 @@ describe('installSkill / planUpdate', () => {
       files: expect.any(Number),
       kind: 'collection',
       skills: ['inner-tool', 'second-tool'],
+      pruned: [],
     });
 
     const manifest = await readInstalledManifest('app_1', 'pro-tool', skillsDir);
@@ -367,6 +374,61 @@ describe('installSkill / planUpdate', () => {
     const { readAppIndex } = await import('./install.js');
     const index = await readAppIndex(skillsDir, 'app_1');
     expect(index.skills['pro-tool']).toBeUndefined();
+  }, 15_000);
+
+  it('prunes platform links for inner skills removed by a collection update, keeping foreign entries', async () => {
+    const { mkdir, rm: rmPath, symlink, lstat, readlink } = await import('node:fs/promises');
+    // 临时 home + 假 zcode 平台目录，平台探测与软链清理都不碰真实机器
+    const home = await mkdtemp(path.join(os.tmpdir(), 'skills-sync-home-'));
+    const platformDir = path.join(home, '.zcode', 'skills');
+    await mkdir(platformDir, { recursive: true });
+
+    try {
+      let tar = tarGzCollectionRepoWith(['inner-tool', 'second-tool', 'third-tool']);
+      const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith(githubUrl)) {
+          return new Response(new Uint8Array(tar), { status: 200 });
+        }
+        return new Response('{}', { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const install = () =>
+        installSkill({
+          baseUrl: platformUrl,
+          machineToken: 't-mock-machine-token',
+          app: 'app_1',
+          slug: 'pro-tool',
+          skillsDir,
+          homeDir: home,
+          fetchImpl,
+        });
+
+      const first = await install();
+      expect(first.skills).toEqual(['inner-tool', 'second-tool', 'third-tool']);
+      expect(first.pruned).toEqual([]);
+
+      // 建好本工具链接，再把 second-tool 的链接换成外来的（指向别处）
+      const { linkSkillsToPlatform } = await import('./link.js');
+      await linkSkillsToPlatform({ platformSkillsDir: platformDir, skillsDir });
+      await rmPath(path.join(platformDir, 'second-tool'), { force: true });
+      await symlink('/tmp/elsewhere', path.join(platformDir, 'second-tool'));
+
+      // 更新：新版只保留 second-tool → inner-tool/third-tool 的本工具链接应被清理
+      tar = tarGzCollectionRepoWith(['second-tool']);
+      const updated = await install();
+      expect(updated.skills).toEqual(['second-tool']);
+      expect(updated.pruned).toEqual(['zcode/inner-tool', 'zcode/third-tool']);
+
+      await expect(lstat(path.join(platformDir, 'inner-tool'))).rejects.toThrow();
+      await expect(lstat(path.join(platformDir, 'third-tool'))).rejects.toThrow();
+      // 保留的技能链接不动；外来链接（即使名字已从新版移除）也不动
+      const kept = await lstat(path.join(platformDir, 'second-tool'));
+      expect(kept.isSymbolicLink()).toBe(true);
+      await expect(readlink(path.join(platformDir, 'second-tool'))).resolves.toBe('/tmp/elsewhere');
+    } finally {
+      await rmPath(home, { recursive: true, force: true });
+    }
   }, 15_000);
 
   it('rejects collection inner skill names already installed by another app, before writing anything', async () => {
