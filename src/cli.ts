@@ -83,7 +83,7 @@ function printApiError(error: unknown): void {
 /** update 后打印被清理的失效软链（新版已不包含的技能）。 */
 function printPrunedLinks(result: InstallResult): void {
   if (result.pruned.length > 0) {
-    process.stdout.write(`  已移除失效软链（新版已不包含）：${result.pruned.join('、')}\n`);
+    process.stdout.write(`  已移除失效软链：${result.pruned.join('、')}\n`);
   }
 }
 
@@ -106,7 +106,7 @@ async function main(): Promise<void> {
       process.stdout.write(
         `已绑定机器：${credential.label ?? '本机'}（${credential.machineToken.slice(0, 8)}…）\n` +
           `凭据已保存：${file}\n` +
-          `默认应用已记录（${configFile}），后续命令可省略 --app\n`,
+          `默认应用已记录（${configFile}）\n`,
       );
       break;
     }
@@ -122,7 +122,7 @@ async function main(): Promise<void> {
         const index = await readAppIndex(skillsDir, ctx.app);
         process.stdout.write(`应用 ${ctx.app} · 角色：${registry.roles.join(', ') || '—'}\n`);
         if (registry.skills.length === 0) {
-          process.stdout.write('暂无可用技能（购买对应套餐后自动获得）\n');
+          process.stdout.write('暂无可用技能\n');
           break;
         }
         for (const skill of registry.skills) {
@@ -273,7 +273,7 @@ async function main(): Promise<void> {
       }
 
       if (targets.length === 0) {
-        process.stdout.write('未检测到任何平台的技能目录（~/.claude/skills 等），无可连接目标；不会主动创建平台目录\n');
+        process.stdout.write('未检测到任何平台的技能目录（~/.claude/skills 等）\n');
         break;
       }
 
