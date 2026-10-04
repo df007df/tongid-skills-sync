@@ -37,8 +37,9 @@ tongid-skills-sync login --app <applicationId 或 slug>
 ```bash
 tongid-skills-sync login                # 打开平台登录并绑定本机机器授权码
 tongid-skills-sync list                 # 可安装技能与最新版本（含已装版本比对）
-tongid-skills-sync install <slug>       # 安装到 ~/.tongid/skills-sync/skills/<app>/<slug>/
-tongid-skills-sync update [slug]        # 按版本比对更新（不带 slug 更新全部）
+tongid-skills-sync install <slug>       # 安装到 ~/.tongid/skills-sync/skills/<app>/<slug>/，并自动软链到本机已检测的平台技能目录
+tongid-skills-sync update [slug]        # 按版本比对更新（不带 slug 更新全部；更新后自动软链）
+tongid-skills-sync uninstall <slug>     # 删除已安装技能（安装目录、元数据与各平台软链）
 tongid-skills-sync link [--platform x]  # 软连接已安装技能到平台技能目录（默认全部已检测平台）
 tongid-skills-sync unlink [--platform x] # 移除平台技能目录中由本工具建立的软连接
 tongid-skills-sync logout               # 解绑本机机器并删除本地凭据
@@ -68,7 +69,7 @@ tongid-skills-sync logout               # 解绑本机机器并删除本地凭�
 2. 检查 CLI 是否已安装（command -v tongid-skills-sync），未安装则执行：npm install -g tongid-skills-sync。
 3. 执行 tongid-skills-sync login --app <app> 绑定本机（<app> 用我提供的应用 slug 或 applicationId 替换，必须显式传入，否则报错）：会自动打开平台登录页（打不开时把终端打印的链接发我），我在浏览器完成登录后 CLI 自动保存凭据并记录默认应用，需在 5 分钟内完成；之后所有命令都不用再传 --app。
 4. 执行 tongid-skills-sync list，向我汇报可安装的技能、版本与已装状态。
-5. 我指定技能后执行 tongid-skills-sync install <slug>，再执行 tongid-skills-sync link，把已安装技能软连接到本机已检测到的平台技能目录（只处理目录已存在的平台，不会创建目录）。
+5. 我指定技能后执行 tongid-skills-sync install <slug>。安装成功后自动软连接到本机已检测到的平台技能目录（只处理目录已存在的平台，不会创建目录；如需补链或指定平台可再执行 tongid-skills-sync link）。
 6. 之后我要求更新技能时执行 tongid-skills-sync update（可带 slug 只更新一个），软连接自动跟随新版本，无需重新 link。
 7. 我要求退出或换机时执行 tongid-skills-sync logout（解绑本机机器并删除本地凭据；默认应用同时被清除，下次登录需重新传 --app）。
 ```

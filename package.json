@@ -1,6 +1,6 @@
 {
   "name": "tongid-skills-sync",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "TongID 技能同步 CLI：本机登录绑定机器授权码，按角色权限安装/更新技能包（GitHub 直连下载），并软连接到各 Agent 平台技能目录。零运行时依赖。",
   "type": "module",
   "license": "MIT",

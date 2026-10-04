@@ -47,6 +47,7 @@ export {
 export {
   installSkill,
   updateSkills,
+  uninstallSkill,
   planUpdate,
   readInstalledManifest,
   readAppIndex,
@@ -61,6 +62,7 @@ export {
   SkillsPayInstallError,
   type InstallResult,
   type InstalledManifest,
+  type UninstallResult,
   type AppIndex,
   type AppIndexSkill,
   type UpdatePlan,

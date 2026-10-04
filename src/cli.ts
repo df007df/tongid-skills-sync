@@ -2,7 +2,7 @@
 import { clearDefaultApp, resolveSkillsPayConfig, writeGlobalConfig, SkillsPayConfigError } from './config.js';
 import { loginMachine, SkillsPayLoginError } from './auth.js';
 import { fetchRegistry, revokeCurrentMachine, SkillsPayApiError } from './api.js';
-import { DEFAULT_SKILLS_DIR, installSkill, planUpdate, readAppIndex, skillInstallDir, updateSkills, type InstallResult } from './install.js';
+import { DEFAULT_SKILLS_DIR, installSkill, planUpdate, readAppIndex, skillInstallDir, uninstallSkill, updateSkills, type InstallResult } from './install.js';
 import { deleteCredential, loadCredential, saveCredential } from './store.js';
 import { detectSkillPlatforms, findSkillPlatform, platformSkillsDir } from './platforms.js';
 import { linkSkillsToPlatform, unlinkSkillsFromPlatform } from './link.js';
@@ -87,6 +87,27 @@ function printPrunedLinks(result: InstallResult): void {
   }
 }
 
+/**
+ * 安装/更新成功后自动软链到本机已存在的平台技能目录（不创建平台目录）。
+ * 只输出有实际动作或异常的条目；无一连接且无跳过异常时保持安静。
+ */
+async function autoLinkToPlatforms(skillsDir: string): Promise<void> {
+  const platforms = detectSkillPlatforms();
+  if (platforms.length === 0) return;
+  for (const platform of platforms) {
+    const outcomes = await linkSkillsToPlatform({ platformSkillsDir: platform.skillsDir, skillsDir });
+    for (const item of outcomes) {
+      const label =
+        item.status === 'linked' ? '已连接'
+        : item.status === 'refreshed' ? '已刷新'
+        : item.status === 'skipped-conflict' ? `跳过（${item.note ?? '同名冲突'}）`
+        : item.status === 'skipped-exists' ? `跳过（${item.note ?? '同名条目已存在'}，不覆盖）`
+        : null; // skipped-unmanaged（目录缺失）不该发生（刚装完），静默
+      if (label) process.stdout.write(`  ${platform.label}（~/${platform.dir}）：${item.slug} ${label}\n`);
+    }
+  }
+}
+
 async function main(): Promise<void> {
   const { command, positional, flags } = parseArgs(process.argv.slice(2));
 
@@ -129,9 +150,9 @@ async function main(): Promise<void> {
           const installed = index.skills[skill.slug];
           const versionLabel = installed
             ? installed.version === skill.version
-              ? `v${skill.version}（已装）`
-              : `v${installed.version} → v${skill.version}`
-            : `v${skill.version}（未安装）`;
+              ? `${skill.version}（已装）`
+              : `${installed.version} → ${skill.version}`
+            : `${skill.version}（未安装）`;
           process.stdout.write(
             `  ${skill.slug.padEnd(24)} ${versionLabel.padEnd(26)} ${skill.isPrivate ? '[私有]' : '[公开]'} ${skill.name}\n`,
           );
@@ -150,12 +171,13 @@ async function main(): Promise<void> {
         baseUrl: flagValue(flags, 'base-url'),
       });
       try {
+        const skillsDir = flagValue(flags, 'dir') ?? DEFAULT_SKILLS_DIR;
         const result = await installSkill({
           baseUrl: ctx.baseUrl,
           machineToken: ctx.machineToken,
           app: ctx.app,
           slug,
-          skillsDir: flagValue(flags, 'dir') ?? DEFAULT_SKILLS_DIR,
+          skillsDir,
           onProgress: createInstallProgressReporter(),
         });
         const detail =
@@ -163,9 +185,10 @@ async function main(): Promise<void> {
             ? `${result.files} 个文件，集合仓含 ${result.skills.length} 个技能：${result.skills.join('、')}`
             : `${result.files} 个文件`;
         process.stdout.write(
-          `已安装 ${result.slug} v${result.version}（${detail}）→ ${skillInstallDir(flagValue(flags, 'dir') ?? DEFAULT_SKILLS_DIR, ctx.app, result.slug)}\n`,
+          `已安装 ${result.slug} ${result.version}（${detail}）→ ${skillInstallDir(flagValue(flags, 'dir') ?? DEFAULT_SKILLS_DIR, ctx.app, result.slug)}\n`,
         );
         printPrunedLinks(result);
+        await autoLinkToPlatforms(skillsDir);
       } catch (error) {
         printApiError(error);
       }
@@ -186,7 +209,7 @@ async function main(): Promise<void> {
           if (!target) fail(`技能 ${only} 不在你的可用清单中`);
           const outdatedEntry = plan.outdated.find((item) => item.slug === only);
           if (!outdatedEntry) {
-            process.stdout.write(`${only} 已是最新版本 v${target.version}\n`);
+            process.stdout.write(`${only} 已是最新版本 ${target.version}\n`);
             break;
           }
           const result = await installSkill({
@@ -198,9 +221,10 @@ async function main(): Promise<void> {
             onProgress: createInstallProgressReporter(),
           });
           process.stdout.write(
-            `${result.slug} ${outdatedEntry.from ? `v${outdatedEntry.from} → ` : ''}v${result.version} 更新完成\n`,
+            `${result.slug} ${outdatedEntry.from ? `${outdatedEntry.from} → ` : ''}${result.version} 更新完成\n`,
           );
           printPrunedLinks(result);
+          await autoLinkToPlatforms(skillsDir);
           break;
         }
 
@@ -215,12 +239,30 @@ async function main(): Promise<void> {
           process.stdout.write('全部技能均为最新版本\n');
         } else {
           for (const result of results) {
-            process.stdout.write(`${result.slug} → v${result.version}（${result.files} 个文件）\n`);
+            process.stdout.write(`${result.slug} → ${result.version}（${result.files} 个文件）\n`);
             printPrunedLinks(result);
           }
+          await autoLinkToPlatforms(skillsDir);
         }
       } catch (error) {
         printApiError(error);
+      }
+      break;
+    }
+
+    case 'uninstall': {
+      const slug = positional[0];
+      if (!slug) fail('用法：tongid-skills-sync uninstall <slug>');
+      const config = await resolveSkillsPayConfig({
+        cliApp: flagValue(flags, 'app'),
+      });
+      const skillsDir = flagValue(flags, 'dir') ?? DEFAULT_SKILLS_DIR;
+      const result = await uninstallSkill({ app: config.app, slug, skillsDir });
+      process.stdout.write(
+        `已删除 ${result.slug} → ${skillInstallDir(skillsDir, config.app, result.slug)}\n`,
+      );
+      if (result.pruned.length > 0) {
+        process.stdout.write(`  已移除软链：${result.pruned.join('、')}\n`);
       }
       break;
     }
@@ -327,8 +369,9 @@ async function main(): Promise<void> {
           '命令：',
           '  login                打开平台登录并绑定本机机器授权码',
           '  list                 列出当前可安装的技能与最新版本',
-          '  install <slug>       安装技能包（根 SKILL.md 单技能仓，或根 skills/ 目录的多技能集合仓）',
-          '  update [slug]        更新技能包（不带 slug 更新全部）',
+          '  install <slug>       安装技能包（根 SKILL.md 单技能仓，或根 skills/ 目录的多技能集合仓；成功后自动软链到本机已检测的平台技能目录）',
+          '  update [slug]        更新技能包（不带 slug 更新全部；更新后同样自动软链）',
+          '  uninstall <slug>     删除已安装的技能（安装目录、元数据与各平台软链）',
           '  link [--platform x]  软连接已安装技能到平台技能目录（集合仓按内部技能逐个连接；默认全部已检测平台）',
           '  unlink [--platform x] 移除平台技能目录中由本工具建立的软连接',
           '  logout               解绑本机机器授权码并删除本地凭据',

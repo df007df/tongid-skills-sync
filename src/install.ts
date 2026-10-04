@@ -642,3 +642,51 @@ export async function updateSkills(options: {
   }
   return results;
 }
+
+export type UninstallResult = {
+  slug: string;
+  kind: SkillRepoKind;
+  /** 一并移除的平台软链（`平台/技能名`，仅本工具建立的） */
+  pruned: string[];
+};
+
+/**
+ * 删除一个已安装技能：先按清单清理各平台目录中指向本安装的软链
+ * （外来条目一律不动），再删除安装目录与元数据清单，最后更新应用索引。
+ * 纯本地操作，不访问平台；未安装时报错。
+ */
+export async function uninstallSkill(options: {
+  app: string;
+  slug: string;
+  skillsDir?: string;
+  /** home 目录（平台软链探测用；默认 os.homedir()，测试可注入） */
+  homeDir?: string;
+}): Promise<UninstallResult> {
+  const app = options.app.trim();
+  if (!app) {
+    throw new SkillsPayInstallError('缺少应用标识（--app / 配置文件 / 环境变量），无法定位安装目录');
+  }
+  const skillsRoot = path.resolve(options.skillsDir ?? DEFAULT_SKILLS_DIR);
+
+  const manifest = await readInstalledManifest(app, options.slug, skillsRoot);
+  if (!manifest) {
+    throw new SkillsPayInstallError(`技能 ${options.slug} 未安装（应用 ${app}）`);
+  }
+
+  const targetDir = skillInstallDir(skillsRoot, app, options.slug);
+  const units = linkNamesOfEntry(manifest, options.slug).map((name) => ({
+    name,
+    dir: manifest.kind === 'collection' ? path.join(targetDir, 'skills', name) : targetDir,
+  }));
+  const pruned = await pruneStaleSkillLinks(options.homeDir ?? os.homedir(), units);
+
+  await rm(targetDir, { recursive: true, force: true });
+  await rm(manifestFile(skillsRoot, app, options.slug), { force: true });
+
+  const index = await readAppIndex(skillsRoot, app);
+  delete index.skills[options.slug];
+  index.updatedAt = new Date().toISOString();
+  await writeAppIndex(skillsRoot, app, index);
+
+  return { slug: options.slug, kind: manifest.kind ?? 'single', pruned };
+}

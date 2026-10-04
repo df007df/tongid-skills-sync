@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loginMachine, SkillsPayLoginError } from './auth.js';
-import { installSkill, planUpdate, readInstalledManifest } from './install.js';
+import { installSkill, planUpdate, readInstalledManifest, uninstallSkill } from './install.js';
 import type { MachineCredential } from './store.js';
 
 /**
@@ -628,4 +628,67 @@ describe('installSkill / planUpdate', () => {
     expect(upToDatePlan.outdated).toEqual([]);
     expect(upToDatePlan.upToDate).toEqual([{ slug: 'pro-tool', version: '1.4.0' }]);
   }, 15_000);
+});
+
+describe('uninstallSkill', () => {
+  it('removes the install dir, metadata, index entry and own platform links, keeping foreign entries', async () => {
+    const { stat, rm: rmPath, symlink, lstat } = await import('node:fs/promises');
+    const home = await mkdtemp(path.join(os.tmpdir(), 'skills-sync-home-'));
+    const platformDir = path.join(home, '.zcode', 'skills');
+    await mkdir(platformDir, { recursive: true });
+
+    try {
+      const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith(githubUrl)) {
+          return new Response(new Uint8Array(tarGzCollectionRepo()), { status: 200 });
+        }
+        return new Response('{}', { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const installed = await installSkill({
+        baseUrl: platformUrl,
+        machineToken: 't-mock-machine-token',
+        app: 'app_1',
+        slug: 'pro-tool',
+        skillsDir,
+        homeDir: home,
+        fetchImpl,
+      });
+      expect(installed.kind).toBe('collection');
+
+      const { linkSkillsToPlatform } = await import('./link.js');
+      await linkSkillsToPlatform({ platformSkillsDir: platformDir, skillsDir });
+      // second-tool 的链接换成外来的（指向别处）：卸载时不得被动
+      await rmPath(path.join(platformDir, 'second-tool'), { force: true });
+      await symlink('/tmp/elsewhere', path.join(platformDir, 'second-tool'));
+
+      const removed = await uninstallSkill({ app: 'app_1', slug: 'pro-tool', skillsDir, homeDir: home });
+      expect(removed).toEqual({
+        slug: 'pro-tool',
+        kind: 'collection',
+        pruned: ['zcode/inner-tool'],
+      });
+
+      // 安装目录与元数据清单消失，索引对账后为空
+      await expect(stat(path.join(skillsDir, 'app_1', 'pro-tool'))).rejects.toThrow();
+      await expect(stat(path.join(skillsDir, 'app_1', '.skills-sync', 'pro-tool.json'))).rejects.toThrow();
+      const { readAppIndex } = await import('./install.js');
+      const index = await readAppIndex(skillsDir, 'app_1');
+      expect(index.skills).toEqual({});
+
+      // 自有软链被移除；外来链接原样保留
+      await expect(lstat(path.join(platformDir, 'inner-tool'))).rejects.toThrow();
+      const kept = await lstat(path.join(platformDir, 'second-tool'));
+      expect(kept.isSymbolicLink()).toBe(true);
+    } finally {
+      await rmPath(home, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it('rejects uninstalling a skill that is not installed', async () => {
+    await expect(uninstallSkill({ app: 'app_1', slug: 'ghost', skillsDir })).rejects.toThrow(
+      /ghost 未安装/,
+    );
+  });
 });
